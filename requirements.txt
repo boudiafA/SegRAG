@@ -1,0 +1,10 @@
+numpy==1.26.*
+Pillow
+tqdm
+pycocotools
+lvis
+huggingface_hub
+datasets
+pyarrow
+scipy
+opencv-python

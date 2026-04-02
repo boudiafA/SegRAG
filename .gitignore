@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+.DS_Store
+
+weights/
+_prompt_cache/
+_feature_cache_*/
+evaluation_results_*/
+feature_bank_*/
+
+.venv/
+env/
