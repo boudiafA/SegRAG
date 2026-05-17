@@ -522,9 +522,79 @@ def _accumulate_previous_class_stats(report: dict, cat_name: str, totals: dict[s
     prev = report["per_class"].get(cat_name, {})
     totals["in"] += prev.get("total_features", 0)
     totals["out"] += prev.get("kept_features", 0)
-    totals["tp"] += prev.get("tp", 0)
-    totals["fp"] += prev.get("fp", 0)
+    totals["tp"] += prev.get("tp", 0) or 0
+    totals["fp"] += prev.get("fp", 0) or 0
     totals["scored"] += prev.get("scored_features", 0)
+
+
+def score_single_reference_class(
+    grouped_bank: dict[int, list[tuple[str, str]]],
+    device: str,
+    query_chunk: int,
+    min_matches: int,
+    class_name: str | None = None,
+):
+    """
+    Fallback score for one-shot banks.
+
+    Cross-image ICCD cannot be evaluated when the bank has only one source
+    image. In that case, score each foreground descriptor by its maximum cosine
+    similarity to any other foreground descriptor from the same source image.
+    """
+    source_ids = sorted(grouped_bank)
+    file_refs: list[tuple[str, str]] = []
+    for image_id in source_ids:
+        file_refs.extend(grouped_bank[image_id])
+    if len(source_ids) != 1:
+        raise ValueError("single-reference fallback requires exactly one source image.")
+
+    source_entries = load_source_entries(file_refs)
+    scores_by_file: dict[str, torch.Tensor] = {}
+    good_by_file: dict[str, torch.Tensor] = {}
+    bad_by_file: dict[str, torch.Tensor] = {}
+    if not source_entries:
+        return file_refs, scores_by_file, good_by_file, bad_by_file
+
+    source_feats = torch.cat([feats for _, feats in source_entries], dim=0)
+    scores = torch.full((source_feats.shape[0],), -1.0, dtype=torch.float32)
+    if source_feats.shape[0] > 1:
+        feats_dev = source_feats.to(device)
+        pbar = tqdm(
+            range(0, source_feats.shape[0], query_chunk),
+            desc=f"  Fallback {class_name}" if class_name else "  Fallback source",
+            leave=False,
+        )
+        for start in pbar:
+            end = min(start + query_chunk, source_feats.shape[0])
+            sims = feats_dev[start:end] @ feats_dev.T
+            rows = torch.arange(end - start, device=device)
+            cols = torch.arange(start, end, device=device)
+            sims[rows, cols] = -float("inf")
+            best_sims = sims.max(dim=1).values
+            scores[start:end] = best_sims.float().cpu()
+            del sims, best_sims, rows, cols
+        pbar.close()
+        del feats_dev
+
+    valid = scores >= 0
+    good = torch.zeros(source_feats.shape[0], dtype=torch.int32)
+    bad = torch.zeros(source_feats.shape[0], dtype=torch.int32)
+    # These synthetic counts let the existing filtering path treat non-negative
+    # fallback scores as scored vectors while preserving the score values.
+    good[valid] = max(1, min_matches)
+
+    offset = 0
+    for fname, feats in source_entries:
+        n = feats.shape[0]
+        scores_by_file[fname] = scores[offset: offset + n]
+        good_by_file[fname] = good[offset: offset + n]
+        bad_by_file[fname] = bad[offset: offset + n]
+        offset += n
+    del source_feats, scores, good, bad, source_entries
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    return file_refs, scores_by_file, good_by_file, bad_by_file
 
 
 def score_class(
@@ -544,12 +614,22 @@ def score_class(
     max_source_images: int | None,
     class_name: str | None = None,
 ):
+    source_ids = sorted(grouped_bank)
+    if len(source_ids) == 1:
+        return score_single_reference_class(
+            grouped_bank=grouped_bank,
+            device=device,
+            query_chunk=query_chunk,
+            min_matches=min_matches,
+            class_name=class_name,
+        )
+
     file_refs = []
     scores_by_file = {}
     good_by_file = {}
     bad_by_file = {}
     accepted_so_far = 0
-    for image_id in sorted(grouped_bank):
+    for image_id in source_ids:
         file_refs.extend(grouped_bank[image_id])
 
     prepared_target_batches = prepare_target_batches(
@@ -560,7 +640,6 @@ def score_class(
         num_workers=num_workers,
         class_name=class_name,
     )
-    source_ids = sorted(grouped_bank)
     if selection_mode == "top-k-images" and max_source_images is not None:
         source_ids = source_ids[:max_source_images]
     source_pbar = tqdm(source_ids, desc=f"  Source {class_name}" if class_name else "  Source images", leave=False)
@@ -711,7 +790,8 @@ def run_filter(
             cat_id=cat_id,
             image_ids=limited_target_ids,
         )
-        if len(target_worklist) < 2:
+        single_reference_fallback = len(grouped_bank) == 1
+        if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
@@ -733,6 +813,8 @@ def run_filter(
         )
 
         file_entries = [(fname, scores_by_file[fname]) for fname, _ in file_refs if fname in scores_by_file]
+        if not file_entries:
+            continue
         scores = torch.cat([scores_by_file[fname] for fname, _ in file_refs if fname in scores_by_file])
         good = torch.cat([good_by_file[fname] for fname, _ in file_refs if fname in good_by_file])
         bad = torch.cat([bad_by_file[fname] for fname, _ in file_refs if fname in bad_by_file])
@@ -833,6 +915,9 @@ def run_filter(
             "per_feature_scores_saved": True,
             "score_sidecar_suffix": ".scores.npy",
             "target_images_used": len(target_worklist),
+            "single_reference_fallback": single_reference_fallback,
+            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "match_counts_are_synthetic": single_reference_fallback,
             "target_references_cap": target_references,
             "selection_mode": selection_mode,
             "max_source_images": max_source_images,
@@ -942,7 +1027,8 @@ def run_score_bank(
             cat_id=cat_id,
             image_ids=limited_target_ids,
         )
-        if len(target_worklist) < 2:
+        single_reference_fallback = len(grouped_bank) == 1
+        if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
@@ -1020,6 +1106,9 @@ def run_score_bank(
             "tp_sidecar_suffix": ".tp.npy",
             "fp_sidecar_suffix": ".fp.npy",
             "target_images_used": len(target_worklist),
+            "single_reference_fallback": single_reference_fallback,
+            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "match_counts_are_synthetic": single_reference_fallback,
             "selection_mode": selection_mode,
             "max_source_images": max_source_images,
             "top_k_features": top_k_features,
@@ -1128,7 +1217,8 @@ def run_filter_adaptive(
             cat_id=cat_id,
             image_ids=limited_target_ids,
         )
-        if len(target_worklist) < 2:
+        single_reference_fallback = len(grouped_bank) == 1
+        if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
@@ -1208,6 +1298,9 @@ def run_filter_adaptive(
             "per_feature_scores_saved": True,
             "score_sidecar_suffix": ".scores.npy",
             "target_images_used": len(target_worklist),
+            "single_reference_fallback": single_reference_fallback,
+            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "match_counts_are_synthetic": single_reference_fallback,
             "selection_mode": selection_mode,
             "max_source_images": max_source_images,
             "top_k_features": top_k_features,
@@ -1322,7 +1415,8 @@ def run_filter_clustered_adaptive(
             cat_id=cat_id,
             image_ids=limited_target_ids,
         )
-        if len(target_worklist) < 2:
+        single_reference_fallback = len(grouped_bank) == 1
+        if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
@@ -1413,6 +1507,9 @@ def run_filter_clustered_adaptive(
             "per_feature_scores_saved": True,
             "score_sidecar_suffix": ".scores.npy",
             "target_images_used": len(target_worklist),
+            "single_reference_fallback": single_reference_fallback,
+            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "match_counts_are_synthetic": single_reference_fallback,
             "selection_mode": selection_mode,
             "max_source_images": max_source_images,
             "top_k_features": top_k_features,
@@ -1524,6 +1621,8 @@ def run_filter_from_scored_bank(
         },
     )
     os.makedirs(output_dir, exist_ok=True)
+    scored_report = load_json(os.path.join(input_dir, "scored_feature_bank_report.json"), {})
+    scored_report_by_class = scored_report.get("per_class", {}) if isinstance(scored_report, dict) else {}
     totals = {"in": 0, "out": 0, "tp": 0, "fp": 0, "scored": 0}
     skipped = 0
 
@@ -1541,6 +1640,8 @@ def run_filter_from_scored_bank(
         in_cat_dir = os.path.join(input_dir, cat_name)
         if not os.path.isdir(in_cat_dir):
             continue
+        scored_meta = scored_report_by_class.get(cat_name, {})
+        single_reference_fallback = bool(scored_meta.get("single_reference_fallback", False))
         file_refs, scores_by_file, good_by_file, bad_by_file = load_scored_class_entries(in_cat_dir)
         if not file_refs:
             continue
@@ -1616,6 +1717,12 @@ def run_filter_from_scored_bank(
             "vectors_saved": vectors_saved,
             "per_feature_scores_saved": True,
             "per_feature_match_counts_saved": has_match_counts,
+            "single_reference_fallback": single_reference_fallback,
+            "score_type": scored_meta.get(
+                "score_type",
+                "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            ),
+            "match_counts_are_synthetic": bool(scored_meta.get("match_counts_are_synthetic", False)),
             "score_sidecar_suffix": ".scores.npy",
             "top_k_features": top_k_features,
         }

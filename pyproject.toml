@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "segrag"
-version = "0.3.0"
+version = "0.4.0"
 description = "SegRAG: retrieval-augmented semantic segmentation with DINOv3 feature banks and SAM3 mask decoding"
 readme = "README.md"
 requires-python = ">=3.10"
