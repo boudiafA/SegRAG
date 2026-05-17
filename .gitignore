@@ -28,12 +28,12 @@ checkpoints/
 *.safetensors
 
 # Data, caches, and generated outputs
-datasets/
-data/
-outputs/
-results/
-logs/
-tmp/
+/datasets/
+/data/
+/outputs/
+/results/
+/logs/
+/tmp/
 feature_bank*/
 *_feature_bank*/
 *_cache*/

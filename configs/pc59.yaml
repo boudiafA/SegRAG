@@ -1,0 +1,6 @@
+dataset_root: /path/to/PC-59
+segmentation_method: text-and-point
+feature_matching_method: hybrid
+reference_images_per_class: 20
+feature_accuracy_threshold: 0.8
+resume: true

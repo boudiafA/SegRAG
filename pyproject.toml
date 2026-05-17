@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "segrag"
+version = "0.3.0"
+description = "SegRAG: retrieval-augmented semantic segmentation with DINOv3 feature banks and SAM3 mask decoding"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "A. Boudiaf" },
+]
+keywords = [
+  "semantic-segmentation",
+  "few-shot-segmentation",
+  "retrieval-augmented-generation",
+  "sam",
+  "dinov3",
+]
+dependencies = [
+  "ftfy",
+  "huggingface_hub",
+  "iopath",
+  "lvis",
+  "numpy==1.26",
+  "omegaconf",
+  "pandas",
+  "pillow",
+  "pyarrow",
+  "pycocotools",
+  "regex",
+  "scikit-learn",
+  "submitit",
+  "termcolor",
+  "torch",
+  "torchmetrics",
+  "torchvision",
+  "tqdm",
+  "typing_extensions",
+]
+
+[project.urls]
+Homepage = "https://github.com/boudiafA/SegRAG"
+Repository = "https://github.com/boudiafA/SegRAG"
+
+[project.scripts]
+segrag-run = "segrag.pipelines.main:main"
+segrag-run-adapters = "segrag.pipelines.adapters:main"
+segrag-run-ade20k = "segrag.pipelines.ade20k:main"
+segrag-evaluate-sam3 = "segrag.stages.evaluate_sam3:main"
+segrag-generate-support-shots = "segrag.data.generate_support_shots:main"
+segrag-prepare-pascal5i = "segrag.stages.prepare_pascal5i:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

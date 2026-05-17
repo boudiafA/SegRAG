@@ -4,7 +4,9 @@ iopath
 lvis
 numpy==1.26
 omegaconf
+pandas
 pillow
+pyarrow
 pycocotools
 regex
 scikit-learn

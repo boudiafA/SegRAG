@@ -1,0 +1,11 @@
+# Default SegRAG configuration template.
+dataset_root: /path/to/dataset
+segmentation_method: text-and-point
+feature_matching_method: hybrid
+reference_images_per_class: 30
+raw_bank_batch_size: 4
+feature_accuracy_threshold: 0.8
+max_references: 10000
+max_images: null
+save_mask_json: false
+resume: true
