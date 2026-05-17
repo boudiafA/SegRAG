@@ -1,14 +1,47 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-*.tmp
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local/editor metadata
+.codex
+.env
+.env.*
 .DS_Store
+*:Zone.Identifier
 
-weights/
-_prompt_cache/
-_feature_cache_*/
-evaluation_results_*/
-feature_bank_*/
-
+# Environments
 .venv/
+venv/
 env/
+conda-meta/
+
+# Model weights and checkpoints
+weights/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Data, caches, and generated outputs
+datasets/
+data/
+outputs/
+results/
+logs/
+tmp/
+feature_bank*/
+*_feature_bank*/
+*_cache*/
+hf_cache/
+mask_json/
+predictions/
+visualizations/
+*_visualizations*/
+*.npy
+*.npz
+*.pkl

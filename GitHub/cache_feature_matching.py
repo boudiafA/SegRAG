@@ -210,8 +210,8 @@ def _save_class_payload(cache_dir: str, file_name: str, class_id: int, payload_k
 
 
 def _run_method(method: str, args) -> dict:
-    checkpoint_dir = os.path.join(args.dataset_root, "_github_prompt_cache_state")
-    checkpoint_path = os.path.join(checkpoint_dir, f"{method}.json")
+    cache_dir = _cache_dir_for_method(args, method)
+    checkpoint_path = os.path.join(cache_dir, "_resume_state.json")
     state = load_json(checkpoint_path, {"processed_image_ids": []}) if args.resume else {"processed_image_ids": []}
     processed = set(state.get("processed_image_ids", []))
 
@@ -231,7 +231,6 @@ def _run_method(method: str, args) -> dict:
     )
     dino_extractor = DINOv3FeatureExtractor(annotation_file=args.annotation_file)
     abs_matcher, rel_matcher, hyb_generator = _build_matchers(args, dino_extractor)
-    cache_dir = _cache_dir_for_method(args, method)
 
     for batch in tqdm(loader, total=len(records), desc=f"Caching {method}"):
         rec = batch[0]
