@@ -1,0 +1,12 @@
+class_name,category_id,requested_reference_images,used_reference_images,available_train_images,reference_annotations,evaluation_images,evaluation_annotations
+apple,1,30,30,536,1111,134,3821
+bean_leaf,2,30,30,1913,4237,478,66238
+bell_pepper,4,30,30,4810,139,204,701
+carrot,5,30,30,48,87,12,38
+cauliflower,7,30,30,1084,76,297,830
+flower,8,30,30,151,1614,39,1390
+grape,10,30,30,424,122,107,346
+rice,11,30,30,179,985,45,2445
+sugarbeet_weed,14,30,17,17,1352,25,1955
+tomato,15,30,30,353,146,89,550
+weed,16,30,30,2959,213,753,3102

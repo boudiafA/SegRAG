@@ -190,6 +190,26 @@ On AgML agricultural benchmarks, text-only SAM 3 fails completely on several
 field-imaged crop and weed categories. SegRAG recovers these classes by using
 real annotated references as visual evidence.
 
+The AgML experiment uses a 30-shot reference setting per class where available.
+The exact support and evaluation image identifiers are documented in
+[`splits/agml/`](splits/agml/). Evaluation uses all `test.json` images containing
+the target class; no query subsampling is applied.
+
+| Class | Reference images | Evaluation images |
+|---|---:|---:|
+| apple | 30/30 | 134 |
+| bean leaf | 30/30 | 478 |
+| bell pepper | 30/30 | 204 |
+| carrot | 30/30 | 12 |
+| cauliflower | 30/30 | 297 |
+| flower | 30/30 | 39 |
+| grape | 30/30 | 107 |
+| rice | 30/30 | 45 |
+| sugarbeet weed | 17/30 | 25 |
+| tomato | 30/30 | 89 |
+| weed | 30/30 | 753 |
+
+
 | Class | SAM 3 Text IoU | SegRAG IoU | Delta |
 |---|---:|---:|---:|
 | apple | 37.27 | 37.65 | +0.38 |
