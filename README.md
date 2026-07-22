@@ -49,7 +49,29 @@ export DINOV3_REPO_PATH=/path/to/dinov3
 export DINOV3_WEIGHTS_PATH=/path/to/dinov3_vitl16_pretrain_lvd1689m.pth
 ```
 
-### 2. Prepare A COCO/LVIS-Style Dataset
+### 2. Reproduce The Paper Results
+
+The one-shot and five-shot paper protocol has a dedicated entrypoint, frozen
+configs, fixed support/query manifests, checkpoint hashes, and archived
+expected metrics. Validate a prepared dataset without loading the models:
+
+```bash
+python scripts/evaluate_paper.py \
+  --config configs/paper/pc59.yaml \
+  --dataset-root /path/to/PC-59 \
+  --shot 5 \
+  --output-root /path/to/new/paper_outputs \
+  --dinov3-repo /path/to/dinov3 \
+  --dinov3-weights /path/to/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth \
+  --validate-only
+```
+
+Remove `--validate-only` to run from raw support images. The evaluator builds a
+new shot-specific bank and refuses to silently reuse incompatible artifacts.
+See [the full reproduction guide](docs/PAPER_REPRODUCTION.md) for every dataset,
+the exact one-shot contingency, resume behavior, and score checks.
+
+### 3. Prepare A New COCO/LVIS-Style Dataset
 
 The main runner expects:
 
@@ -75,7 +97,10 @@ dataset_root/
   val/images/
 ```
 
-### 3. Run SegRAG
+### 4. Run SegRAG On New Data
+
+The generic runner below is for exploratory or new-dataset use. It does not
+replace the frozen paper evaluator above.
 
 Run the full text+point pipeline:
 
@@ -167,7 +192,8 @@ text-only SAM 3.
 ### Standard Benchmarks
 
 All values below are mIoU (%). SegRAG uses a DINOv3 ViT-L/16 feature bank and
-SAM 3 joint text+point prompting. SAM 3 is the direct text-only baseline.
+SAM 3 joint text+point prompting. SAM 3 is the direct text-only baseline. The
+SegRAG rows use the fixed manifests in [`splits/standard/`](splits/standard/).
 
 | Method | Setting | ADE20K-150 | Cityscapes | PC-59 | LVIS |
 |---|---:|---:|---:|---:|---:|
@@ -259,7 +285,10 @@ SegRAG/
     stages/      stage-level wrappers and evaluation code
     utils/       paths, metrics, cache, and resume helpers
   scripts/       stable CLI entrypoints
-  configs/       dataset run templates
+  configs/paper/ frozen paper configurations
+  splits/        fixed support and query manifests
+  reproducibility/ archived metrics and software provenance
+  docs/          method and reproduction documentation
   examples/      short runnable examples
   tests/         regression and equivalence checks
 ```
@@ -271,6 +300,7 @@ segrag-run
 segrag-run-adapters
 segrag-run-ade20k
 segrag-evaluate-sam3
+segrag-evaluate-paper
 segrag-generate-support-shots
 segrag-prepare-pascal5i
 ```
@@ -279,6 +309,9 @@ segrag-prepare-pascal5i
 
 ```bash
 PYTHONPATH=src python -m compileall -q src scripts tests
+PYTHONPATH=src python -m pytest -q
+python tools/verify_paper_release.py
+PYTHONPATH=src python scripts/evaluate_paper.py --help
 PYTHONPATH=src python scripts/run_pipeline.py --help
 PYTHONPATH=src python scripts/evaluate_sam3.py --help
 ```

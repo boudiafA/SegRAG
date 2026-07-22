@@ -1,0 +1,39 @@
+protocol_version: segrag-table4-v1
+dataset: LVIS
+reproduction_tolerance: 0.0005
+paths:
+  train_annotations: train/lvis_v1_train.json
+  query_annotations: val/lvis_v1_val.json
+  support_images: reference_imgs
+  query_images: val/images
+  support_manifest: ../../splits/standard/lvis/supports_1_5shot.json
+  query_manifest: ../../splits/standard/lvis/queries.json
+bank:
+  model_name: dinov3_vitl16
+  image_size: 1536
+  patch_size: 16
+  foreground_occupancy_threshold: 0.90
+  build_batch_size: 4
+  score_keep_threshold: 0.60
+  similarity_floor: 0.0
+  min_matches: 3
+  max_source_images: 100
+  target_image_limit: 100
+  query_chunk: 256
+  target_batch_size: 16
+  filter: adaptive_q75
+  adaptive_formula: clip(0.90 * q75, 0.65, 0.82)
+  top_k_features: 10000
+tsg:
+  method: hybrid
+  similarity_threshold: 0.80
+  loose_threshold: 0.80
+  validation_threshold: 0.80
+  peak_threshold: 0.20
+  min_component_size: 4
+  min_peak_distance: 10
+  num_points: 10
+  max_references: 10000
+reported_miou:
+  "1": 0.5670690697223757
+  "5": 0.5884259297446744

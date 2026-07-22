@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "segrag"
-version = "0.4.0"
+version = "1.0.0"
 description = "SegRAG: retrieval-augmented semantic segmentation with DINOv3 feature banks and SAM3 mask decoding"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,12 +24,13 @@ dependencies = [
   "huggingface_hub",
   "iopath",
   "lvis",
-  "numpy==1.26",
+  "numpy>=1.26,<3",
   "omegaconf",
   "pandas",
   "pillow",
   "pyarrow",
   "pycocotools",
+  "PyYAML",
   "regex",
   "scikit-learn",
   "submitit",
@@ -40,6 +41,9 @@ dependencies = [
   "tqdm",
   "typing_extensions",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://github.com/boudiafA/SegRAG"
@@ -52,6 +56,7 @@ segrag-run-ade20k = "segrag.pipelines.ade20k:main"
 segrag-evaluate-sam3 = "segrag.stages.evaluate_sam3:main"
 segrag-generate-support-shots = "segrag.data.generate_support_shots:main"
 segrag-prepare-pascal5i = "segrag.stages.prepare_pascal5i:main"
+segrag-evaluate-paper = "segrag.reproducibility.paper_benchmark:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

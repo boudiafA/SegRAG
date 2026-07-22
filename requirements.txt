@@ -2,12 +2,13 @@ ftfy
 huggingface_hub
 iopath
 lvis
-numpy==1.26
+numpy>=1.26,<3
 omegaconf
 pandas
 pillow
 pyarrow
 pycocotools
+PyYAML
 regex
 scikit-learn
 submitit

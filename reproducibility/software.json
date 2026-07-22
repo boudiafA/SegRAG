@@ -1,0 +1,27 @@
+{
+  "protocol_version": "segrag-table4-v1",
+  "dinov3": {
+    "repository": "https://github.com/facebookresearch/dinov3",
+    "tested_commit": "54694f7627fd815f62a5dcc82944ffa6153bbb76",
+    "model": "dinov3_vitl16",
+    "checkpoint": "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+    "checkpoint_sha256": "8aa4cbddda325040fc78db2c272754af6ebe8ff2c55f6ec4f1964d8890f66035"
+  },
+  "sam3": {
+    "repository": "https://github.com/facebookresearch/sam3",
+    "tested_commit": "d0b1b9d5aafeac07e893ab87e002eaaaa7381802",
+    "huggingface_model": "facebook/sam3",
+    "huggingface_revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+    "checkpoint": "sam3.pt",
+    "checkpoint_sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
+  },
+  "tested_environment": {
+    "python": "3.12.12",
+    "torch": "2.7.0+cu126",
+    "torchvision": "0.22.0+cu126",
+    "cuda_runtime": "12.6",
+    "numpy": "2.2.6",
+    "pillow": "11.3.0"
+  },
+  "dependency_note": "Local SAM 3 modifications observed during archival affect video-only code. The SegRAG image path uses the unmodified official build_sam3_image_model implementation."
+}

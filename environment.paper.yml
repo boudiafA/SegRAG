@@ -1,31 +1,31 @@
-name: segrag
+name: segrag-paper
 channels:
-  - defaults
+  - pytorch
+  - nvidia
   - conda-forge
 dependencies:
-  - python=3.11
-  - omegaconf
+  - python=3.12.12
   - pip
+  - pytorch=2.7.0
+  - torchvision=0.22.0
+  - pytorch-cuda=12.6
+  - numpy=2.2.6
+  - pillow=11.3.0
   - pip:
-    - ftfy # needed for dino.txt
+    - ftfy==6.1.1
     - huggingface_hub
-    - iopath
+    - iopath>=0.1.10
     - lvis
-    - numpy==1.26
     - omegaconf
     - pandas
-    - pillow
     - pyarrow
     - pycocotools
-    - PyYAML
-    - regex # needed for dino.txt
+    - PyYAML==6.0.3
+    - regex
     - scikit-learn
-    - scikit-learn-intelex
     - submitit
     - termcolor
-    - torch 
-    - torchvision 
+    - timm>=1.0.17
     - torchmetrics
     - tqdm
     - typing_extensions
-    
