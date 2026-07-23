@@ -11,6 +11,12 @@ Both settings use DINOv3 ViT-L/16 at 1536 x 1536, foreground-patch occupancy
 of 0.90, SAM 3 joint text-and-point prompting, and the complete fixed query
 manifest.
 
+The selected `N` support images per class are the complete labelled set
+available to the bank stage. They provide both source descriptors and ICCD
+scoring targets. Self-image comparisons are excluded, so every source
+descriptor is evaluated against exactly the other `N-1` selected images. No
+separate target-image or calibration-image allowance is used.
+
 For one-shot, DINOv3 foreground descriptors from the rank-1 support image are
 used directly after the 0.90 occupancy gate. Cross-image ICCD scoring requires
 another reference image and is therefore not defined for this setting. The

@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from segrag.stages import filter_bank as stage1_filter
 from segrag.stages import score_bank as stage1_score
@@ -44,19 +44,24 @@ class DatasetLayout:
     val_ann_file: str
     train_image_dir: str
     val_image_dir: str
+    artifact_root: str | None = None
+
+    @property
+    def output_root(self) -> str:
+        return self.artifact_root or self.dataset_root
 
     @property
     def raw_feature_bank_dir(self) -> str:
-        return os.path.join(self.dataset_root, "feature_bank_dinov3_vitl16_1536")
+        return os.path.join(self.output_root, "feature_bank_dinov3_vitl16_1536")
 
     @property
     def scored_feature_bank_dir(self) -> str:
-        return os.path.join(self.dataset_root, "feature_bank_dinov3_vitl16_1536_scored_thr060")
+        return os.path.join(self.output_root, "feature_bank_dinov3_vitl16_1536_scored_thr060")
 
     @property
     def filtered_feature_bank_dir(self) -> str:
         return os.path.join(
-            self.dataset_root,
+            self.output_root,
             "feature_bank_adaptive_q75_from_thr060",
         )
 
@@ -100,7 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference-images-per-class",
         type=int,
         default=30,
-        help="Maximum number of source images per class used while building the raw bank.",
+        help=(
+            "Maximum N-shot support count. The same selected M<=N images build the "
+            "bank and provide ICCD scoring targets; each image is scored against "
+            "the other M-1 images."
+        ),
     )
     parser.add_argument(
         "--raw-bank-batch-size",
@@ -239,11 +248,9 @@ def _run_stage1(args: argparse.Namespace, layout: DatasetLayout) -> dict:
         scan_workers=8,
         checkpoint_name="_build_feature_bank_resume.json",
         selection_mode="top-k-images",
-        max_source_images=args.reference_images_per_class,
         top_k_features=None,
         keep_threshold=0.6,
         min_matches=3,
-        target_image_limit=100,
         query_chunk=256,
         target_batch_size=16,
         num_workers=8,
@@ -268,7 +275,7 @@ def _run_stage1(args: argparse.Namespace, layout: DatasetLayout) -> dict:
 def _run_stage2(args: argparse.Namespace, layout: DatasetLayout) -> dict:
     stage_args = argparse.Namespace(
         method=args.feature_matching_method,
-        dataset_root=layout.dataset_root,
+        dataset_root=layout.output_root,
         annotation_file=layout.val_ann_file,
         image_dir=layout.val_image_dir,
         feature_bank_dir=None,
@@ -297,7 +304,7 @@ def _run_stage4_once(args: argparse.Namespace, layout: DatasetLayout, segmentati
     stage_args = argparse.Namespace(
         prompt_mode=mode_map[segmentation_method],
         feature_matching_method=args.feature_matching_method,
-        dataset_root=layout.dataset_root,
+        dataset_root=layout.output_root,
         annotation_file=layout.val_ann_file,
         image_dir=layout.val_image_dir,
         feature_bank_dir=None,
@@ -326,12 +333,23 @@ def _run_stage4_once(args: argparse.Namespace, layout: DatasetLayout, segmentati
 
 
 def run(args: argparse.Namespace) -> dict:
+    if args.reference_images_per_class < 1:
+        raise ValueError("--reference-images-per-class must be at least 1.")
     layout = _resolve_dataset_layout(args.dataset_root)
+    layout = replace(
+        layout,
+        artifact_root=os.path.join(
+            layout.dataset_root,
+            "segrag_runs",
+            f"strict_{args.reference_images_per_class}shot",
+        ),
+    )
     print("Resolved dataset layout:")
     print(f"  train annotations : {layout.train_ann_file}")
     print(f"  val annotations   : {layout.val_ann_file}")
     print(f"  train images      : {layout.train_image_dir}")
     print(f"  val images        : {layout.val_image_dir}")
+    print(f"  run artifacts     : {layout.output_root}")
     print(f"  raw feature bank  : {layout.raw_feature_bank_dir}")
     print(f"  scored bank       : {layout.scored_feature_bank_dir}")
     print(f"  filtered bank     : {layout.filtered_feature_bank_dir}")
@@ -342,12 +360,19 @@ def run(args: argparse.Namespace) -> dict:
             "resolved_val_ann_file": layout.val_ann_file,
             "resolved_train_image_dir": layout.train_image_dir,
             "resolved_val_image_dir": layout.val_image_dir,
+            "resolved_artifact_root": layout.output_root,
             "resolved_raw_feature_bank_dir": layout.raw_feature_bank_dir,
             "resolved_scored_feature_bank_dir": layout.scored_feature_bank_dir,
             "resolved_filtered_feature_bank_dir": layout.filtered_feature_bank_dir,
             "default_stage1_score_threshold": 0.6,
             "default_stage1_score_top_k": None,
             "default_stage1_filter_method": "adaptive_q75",
+            "support_protocol": {
+                "requested_max_shot": args.reference_images_per_class,
+                "source_and_scoring_sets": "identical per class",
+                "self_comparison": False,
+                "comparisons_per_source": "actual class support count minus one",
+            },
         },
         "stages": {},
     }

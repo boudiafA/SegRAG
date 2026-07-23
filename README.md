@@ -115,7 +115,12 @@ python scripts/run_pipeline.py \
 ```
 
 Change `--reference-images-per-class` to run another shot setting, for example
-`1`, `5`, or `20`.
+`1`, `5`, `20`, or `30`. This is a strict shared support count: the same
+selected images provide the stored descriptors and the ICCD scoring targets.
+A descriptor from one support image is scored only against the other `N-1`
+support images; no additional labelled calibration images are consumed.
+For `N=1`, cross-image ICCD is undefined, so the occupancy-gated descriptors
+are retained directly, subject only to the configured deterministic bank cap.
 
 Run the SAM 3 text-only baseline on the same split:
 
@@ -149,18 +154,20 @@ python scripts/run_adapters.py \
   --resume
 ```
 
-Generated artifacts are written under the dataset root:
+Generated artifacts are isolated by support count under the dataset root:
 
 ```text
-feature_bank_dinov3_vitl16_1536/
-feature_bank_dinov3_vitl16_1536_scored_thr060/
-feature_bank_adaptive_q75_from_thr060/
-_prompt_cache/
-evaluation_results_*/
+segrag_runs/
+  strict_<N>shot/
+    feature_bank_dinov3_vitl16_1536/
+    feature_bank_dinov3_vitl16_1536_scored_thr060/
+    feature_bank_adaptive_q75_from_thr060/
+    _prompt_cache/
+    evaluation_results_*/
 ```
 
-Use a separate dataset/output root per shot setting if you need strict protocol
-separation.
+This prevents resume mode from reusing banks, prompt caches, or predictions
+produced with another support count.
 
 ## Model Overview
 
@@ -216,10 +223,28 @@ On AgML agricultural benchmarks, text-only SAM 3 fails completely on several
 field-imaged crop and weed categories. SegRAG recovers these classes by using
 real annotated references as visual evidence.
 
-The AgML experiment uses a 30-shot reference setting per class where available.
-The exact support and evaluation image identifiers are documented in
-[`splits/agml/`](splits/agml/). Evaluation uses all `test.json` images containing
-the target class; no query subsampling is applied.
+The released AgML split defines up to 30 support images per class. The same
+selected images must be used for raw-bank construction and ICCD scoring, with
+self-image comparisons excluded. The exact support and evaluation image
+identifiers are documented in [`splits/agml/`](splits/agml/). Evaluation uses
+all `test.json` images containing the target class; no query subsampling is
+applied.
+
+Run the corrected protocol with:
+
+```bash
+python scripts/run_pipeline.py \
+  --dataset-root /path/to/prepared_agml_root \
+  --segmentation-method text-and-point \
+  --reference-images-per-class 30 \
+  --feature-matching-method hybrid \
+  --resume \
+  --save-mask-json
+```
+
+The AgML values below are archived historical measurements and are not an
+expected-score check for the corrected strict-30 runner. They must be
+re-evaluated before being reported as strict 30-shot results.
 
 | Class | Reference images | Evaluation images |
 |---|---:|---:|

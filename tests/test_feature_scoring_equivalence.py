@@ -27,7 +27,7 @@ import torch
 from tqdm import tqdm
 
 from segrag.modeling.iccd import (
-    _limit_target_image_ids,
+    _shared_support_image_ids,
     build_target_worklist,
     get_category_name,
     index_class_bank_grouped,
@@ -56,8 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-feature-bank-dir", default=None, help="Raw feature bank directory. Defaults to dataset_root/feature_bank_dinov3_vitl16_1536")
     parser.add_argument("--class-name", default=None, help="Single class to test. If omitted, uses the first available class.")
     parser.add_argument("--max-classes", type=int, default=1, help="Maximum number of classes to test when --class-name is not given.")
-    parser.add_argument("--max-source-images", type=int, default=100)
-    parser.add_argument("--target-image-limit", type=int, default=100)
+    parser.add_argument(
+        "--support-images-per-class",
+        type=int,
+        default=30,
+        help="Use the same N selected images as scoring sources and targets.",
+    )
     parser.add_argument("--query-chunk", type=int, default=256)
     parser.add_argument("--target-batch-size", type=int, default=16, help="Batch size used while preparing target image features.")
     parser.add_argument(
@@ -127,8 +131,6 @@ def score_class_one_to_many(
     target_batch_size: int,
     many_target_batch_size: int | None,
     num_workers: int,
-    selection_mode: str,
-    max_source_images: int | None,
     class_name: str | None = None,
 ):
     file_refs: list[tuple[str, str]] = []
@@ -156,8 +158,6 @@ def score_class_one_to_many(
         grids_dev_all = None
         masks_dev_all = None
     source_ids = sorted(grouped_bank)
-    if selection_mode == "top-k-images" and max_source_images is not None:
-        source_ids = source_ids[:max_source_images]
 
     effective_many_batch = many_target_batch_size
     if effective_many_batch is None:
@@ -334,6 +334,8 @@ def _select_class_names(raw_feature_bank_dir: str, requested_class: str | None, 
 
 def run(args: argparse.Namespace) -> dict:
     args = _resolve_paths(args)
+    if args.support_images_per_class < 1:
+        raise ValueError("--support-images-per-class must be at least 1.")
     if not os.path.isdir(args.raw_feature_bank_dir):
         raise FileNotFoundError(f"Raw feature bank directory not found: {args.raw_feature_bank_dir}")
     if not os.path.isfile(args.train_ann_file):
@@ -359,13 +361,19 @@ def run(args: argparse.Namespace) -> dict:
             continue
 
         grouped_bank = index_class_bank_grouped(os.path.join(args.raw_feature_bank_dir, class_name))
-        limited_target_ids = _limit_target_image_ids(image_ids_by_cat.get(cat_id, []), args.target_image_limit)
+        support_image_ids = _shared_support_image_ids(
+            grouped_bank=grouped_bank,
+            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
+            support_image_limit=args.support_images_per_class,
+            class_name=class_name,
+        )
+        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
         target_worklist = build_target_worklist(
             image_dir=args.image_dir,
             images=images,
             anns_by_image=anns_by_image,
             cat_id=cat_id,
-            image_ids=limited_target_ids,
+            image_ids=support_image_ids,
         )
         if len(target_worklist) < 2:
             class_reports.append(
@@ -382,7 +390,7 @@ def run(args: argparse.Namespace) -> dict:
         if not args.skip_one_to_one:
             t_one_to_one = time.time()
             one_to_one_refs, one_to_one_scores, one_to_one_good, one_to_one_bad = score_class(
-                grouped_bank=grouped_bank,
+                grouped_bank=support_bank,
                 target_worklist=target_worklist,
                 model=model,
                 device=device,
@@ -395,7 +403,6 @@ def run(args: argparse.Namespace) -> dict:
                 target_references=None,
                 early_accept=False,
                 selection_mode=args.selection_mode,
-                max_source_images=args.max_source_images,
                 class_name=class_name,
             )
             one_to_one_seconds = time.time() - t_one_to_one
@@ -409,7 +416,7 @@ def run(args: argparse.Namespace) -> dict:
 
         t_one_to_many = time.time()
         one_to_many = score_class_one_to_many(
-            grouped_bank=grouped_bank,
+            grouped_bank=support_bank,
             target_worklist=target_worklist,
             model=model,
             device=device,
@@ -418,8 +425,6 @@ def run(args: argparse.Namespace) -> dict:
             target_batch_size=args.target_batch_size,
             many_target_batch_size=args.many_target_batch_size,
             num_workers=args.num_workers,
-            selection_mode=args.selection_mode,
-            max_source_images=args.max_source_images,
             class_name=class_name,
         )
         one_to_many_seconds = time.time() - t_one_to_many
@@ -473,8 +478,7 @@ def run(args: argparse.Namespace) -> dict:
             "raw_feature_bank_dir": args.raw_feature_bank_dir,
             "class_name": args.class_name,
             "max_classes": args.max_classes,
-            "max_source_images": args.max_source_images,
-            "target_image_limit": args.target_image_limit,
+            "support_images_per_class": args.support_images_per_class,
             "query_chunk": args.query_chunk,
             "target_batch_size": args.target_batch_size,
             "many_target_batch_size": args.many_target_batch_size,

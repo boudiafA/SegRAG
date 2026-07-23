@@ -225,8 +225,29 @@ def prepare_target_batches(model, device: str, target_worklist: list[tuple[int, 
     return prepared_batches
 
 
-def _limit_target_image_ids(image_ids: list[int], target_image_limit: int | None) -> list[int]:
-    return list(image_ids if target_image_limit is None else image_ids[:target_image_limit])
+def _shared_support_image_ids(
+    *,
+    grouped_bank: dict[int, list[tuple[str, str]]],
+    annotated_image_ids: list[int],
+    support_image_limit: int | None,
+    class_name: str,
+) -> list[int]:
+    source_ids = sorted(grouped_bank)
+    selected_ids = list(
+        annotated_image_ids
+        if support_image_limit is None
+        else annotated_image_ids[:support_image_limit]
+    )
+    if source_ids != selected_ids:
+        source_only = sorted(set(source_ids) - set(selected_ids))
+        annotation_only = sorted(set(selected_ids) - set(source_ids))
+        raise RuntimeError(
+            f"ICCD support-set mismatch for class {class_name!r}: the raw bank and "
+            "support annotation must contain exactly the same selected images. "
+            f"bank_only={source_only[:10]}, annotation_only={annotation_only[:10]}. "
+            "Rebuild the raw bank from the exact N-shot support annotation."
+        )
+    return selected_ids
 
 
 def _split_scores_by_file(file_entries: list[tuple[str, torch.Tensor]], flat_keep_mask: torch.Tensor):
@@ -290,6 +311,15 @@ def _apply_top_k_features(scores_for_filter: torch.Tensor, keep_threshold: float
     passing_scores = scores_for_filter[passing_idx]
     _, top_idx = passing_scores.topk(top_k_features)
     keep_mask[passing_idx[top_idx]] = True
+    return keep_mask
+
+
+def _single_reference_keep_mask(num_features: int, top_k_features: int | None) -> torch.Tensor:
+    keep_mask = torch.zeros(num_features, dtype=torch.bool)
+    keep_count = num_features
+    if top_k_features is not None and top_k_features > 0:
+        keep_count = min(keep_count, top_k_features)
+    keep_mask[:keep_count] = True
     return keep_mask
 
 
@@ -538,8 +568,9 @@ def score_single_reference_class(
     Fallback score for one-shot banks.
 
     Cross-image ICCD cannot be evaluated when the bank has only one source
-    image. In that case, score each foreground descriptor by its maximum cosine
-    similarity to any other foreground descriptor from the same source image.
+    image. Retain the occupancy-gated foreground descriptors without inventing
+    a within-image reliability estimate. Unit scores and synthetic match counts
+    are bookkeeping values for the shared scored-bank format only.
     """
     source_ids = sorted(grouped_bank)
     file_refs: list[tuple[str, str]] = []
@@ -555,33 +586,12 @@ def score_single_reference_class(
     if not source_entries:
         return file_refs, scores_by_file, good_by_file, bad_by_file
 
+    del device, query_chunk, class_name
     source_feats = torch.cat([feats for _, feats in source_entries], dim=0)
-    scores = torch.full((source_feats.shape[0],), -1.0, dtype=torch.float32)
-    if source_feats.shape[0] > 1:
-        feats_dev = source_feats.to(device)
-        pbar = tqdm(
-            range(0, source_feats.shape[0], query_chunk),
-            desc=f"  Fallback {class_name}" if class_name else "  Fallback source",
-            leave=False,
-        )
-        for start in pbar:
-            end = min(start + query_chunk, source_feats.shape[0])
-            sims = feats_dev[start:end] @ feats_dev.T
-            rows = torch.arange(end - start, device=device)
-            cols = torch.arange(start, end, device=device)
-            sims[rows, cols] = -float("inf")
-            best_sims = sims.max(dim=1).values
-            scores[start:end] = best_sims.float().cpu()
-            del sims, best_sims, rows, cols
-        pbar.close()
-        del feats_dev
-
-    valid = scores >= 0
+    scores = torch.ones(source_feats.shape[0], dtype=torch.float32)
     good = torch.zeros(source_feats.shape[0], dtype=torch.int32)
     bad = torch.zeros(source_feats.shape[0], dtype=torch.int32)
-    # These synthetic counts let the existing filtering path treat non-negative
-    # fallback scores as scored vectors while preserving the score values.
-    good[valid] = max(1, min_matches)
+    good.fill_(max(1, min_matches))
 
     offset = 0
     for fname, feats in source_entries:
@@ -592,8 +602,6 @@ def score_single_reference_class(
         offset += n
     del source_feats, scores, good, bad, source_entries
     gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
     return file_refs, scores_by_file, good_by_file, bad_by_file
 
 
@@ -611,7 +619,6 @@ def score_class(
     target_references: int | None,
     early_accept: bool,
     selection_mode: str,
-    max_source_images: int | None,
     class_name: str | None = None,
 ):
     source_ids = sorted(grouped_bank)
@@ -640,8 +647,6 @@ def score_class(
         num_workers=num_workers,
         class_name=class_name,
     )
-    if selection_mode == "top-k-images" and max_source_images is not None:
-        source_ids = source_ids[:max_source_images]
     source_pbar = tqdm(source_ids, desc=f"  Source {class_name}" if class_name else "  Source images", leave=False)
     for source_image_id in source_pbar:
         if selection_mode == "target-references" and early_accept and target_references is not None and accepted_so_far >= target_references:
@@ -719,12 +724,11 @@ def run_filter(
     query_chunk: int,
     sim_floor: float,
     target_batch_size: int,
-    target_image_limit: int | None,
+    support_image_limit: int | None,
     target_references: int | None,
     num_workers: int,
     early_accept: bool,
     selection_mode: str,
-    max_source_images: int | None,
     top_k_features: int | None,
     resume: bool,
 ):
@@ -749,12 +753,11 @@ def run_filter(
                 "query_chunk": query_chunk,
                 "sim_floor": sim_floor,
                 "target_batch_size": target_batch_size,
-                "target_image_limit": target_image_limit,
+                "support_image_limit": support_image_limit,
                 "target_references": target_references,
                 "num_workers": num_workers,
                 "early_accept": early_accept,
                 "selection_mode": selection_mode,
-                "max_source_images": max_source_images,
                 "top_k_features": top_k_features,
             },
             "per_class": {},
@@ -782,20 +785,26 @@ def run_filter(
         grouped_bank = index_class_bank_grouped(os.path.join(input_dir, cat_name))
         if not grouped_bank:
             continue
-        limited_target_ids = _limit_target_image_ids(image_ids_by_cat.get(cat_id, []), target_image_limit)
+        support_image_ids = _shared_support_image_ids(
+            grouped_bank=grouped_bank,
+            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
+            support_image_limit=support_image_limit,
+            class_name=cat_name,
+        )
+        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
         target_worklist = build_target_worklist(
             image_dir=image_dir,
             images=images,
             anns_by_image=anns_by_image,
             cat_id=cat_id,
-            image_ids=limited_target_ids,
+            image_ids=support_image_ids,
         )
-        single_reference_fallback = len(grouped_bank) == 1
+        single_reference_fallback = len(support_bank) == 1
         if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
-            grouped_bank=grouped_bank,
+            grouped_bank=support_bank,
             target_worklist=target_worklist,
             model=model,
             device=device,
@@ -808,7 +817,6 @@ def run_filter(
             target_references=target_references,
             early_accept=early_accept,
             selection_mode=selection_mode,
-            max_source_images=max_source_images,
             class_name=cat_name,
         )
 
@@ -824,7 +832,17 @@ def run_filter(
         scores_for_filter[~scored_mask] = -1.0
 
         capped_by_target_refs = False
-        if filter_mode == "reweight":
+        if single_reference_fallback:
+            keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
+            floor_applied = False
+            keep_by_file = _split_scores_by_file(file_entries, keep_mask)
+            files_saved, vectors_saved = save_class_outputs_from_disk(
+                out_cat_dir,
+                file_refs,
+                keep_by_file,
+                scores_by_file,
+            )
+        elif filter_mode == "reweight":
             os.makedirs(out_cat_dir, exist_ok=True)
             for fname, path in file_refs:
                 feats = torch.load(path, map_location="cpu", weights_only=True).float()
@@ -878,19 +896,23 @@ def run_filter(
 
         report["per_class"][cat_name] = {
             "status": (
-                "reweight"
-                if filter_mode == "reweight"
+                "single_reference_raw_occupancy"
+                if single_reference_fallback
                 else (
-                    "threshold_disabled"
-                    if keep_threshold is None
+                    "reweight"
+                    if filter_mode == "reweight"
                     else (
-                    "top_k_images"
-                    if selection_mode == "top-k-images"
-                    else (
-                        "early_accept"
-                        if early_accept and target_references is not None and kept_features <= target_references
-                        else ("target_ref_cap" if capped_by_target_refs else ("floor_applied" if floor_applied else "filtered"))
-                    )
+                        "threshold_disabled"
+                        if keep_threshold is None
+                        else (
+                            "top_k_images"
+                            if selection_mode == "top-k-images"
+                            else (
+                                "early_accept"
+                                if early_accept and target_references is not None and kept_features <= target_references
+                                else ("target_ref_cap" if capped_by_target_refs else ("floor_applied" if floor_applied else "filtered"))
+                            )
+                        )
                     )
                 )
             ),
@@ -916,11 +938,12 @@ def run_filter(
             "score_sidecar_suffix": ".scores.npy",
             "target_images_used": len(target_worklist),
             "single_reference_fallback": single_reference_fallback,
-            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "score_type": "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
             "match_counts_are_synthetic": single_reference_fallback,
             "target_references_cap": target_references,
             "selection_mode": selection_mode,
-            "max_source_images": max_source_images,
+            "support_images_used": len(support_image_ids),
+            "support_image_ids": support_image_ids,
             "top_k_features": top_k_features,
         }
         save_json_atomic(report_path, report)
@@ -962,10 +985,9 @@ def run_score_bank(
     query_chunk: int,
     sim_floor: float,
     target_batch_size: int,
-    target_image_limit: int | None,
+    support_image_limit: int | None,
     num_workers: int,
     selection_mode: str,
-    max_source_images: int | None,
     top_k_features: int | None,
     resume: bool,
 ):
@@ -988,10 +1010,9 @@ def run_score_bank(
                 "query_chunk": query_chunk,
                 "sim_floor": sim_floor,
                 "target_batch_size": target_batch_size,
-                "target_image_limit": target_image_limit,
+                "support_image_limit": support_image_limit,
                 "num_workers": num_workers,
                 "selection_mode": selection_mode,
-                "max_source_images": max_source_images,
                 "top_k_features": top_k_features,
             },
             "per_class": {},
@@ -1019,20 +1040,26 @@ def run_score_bank(
         grouped_bank = index_class_bank_grouped(os.path.join(input_dir, cat_name))
         if not grouped_bank:
             continue
-        limited_target_ids = _limit_target_image_ids(image_ids_by_cat.get(cat_id, []), target_image_limit)
+        support_image_ids = _shared_support_image_ids(
+            grouped_bank=grouped_bank,
+            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
+            support_image_limit=support_image_limit,
+            class_name=cat_name,
+        )
+        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
         target_worklist = build_target_worklist(
             image_dir=image_dir,
             images=images,
             anns_by_image=anns_by_image,
             cat_id=cat_id,
-            image_ids=limited_target_ids,
+            image_ids=support_image_ids,
         )
-        single_reference_fallback = len(grouped_bank) == 1
+        single_reference_fallback = len(support_bank) == 1
         if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
-            grouped_bank=grouped_bank,
+            grouped_bank=support_bank,
             target_worklist=target_worklist,
             model=model,
             device=device,
@@ -1045,7 +1072,6 @@ def run_score_bank(
             target_references=None,
             early_accept=False,
             selection_mode=selection_mode,
-            max_source_images=max_source_images,
             class_name=cat_name,
         )
 
@@ -1107,10 +1133,11 @@ def run_score_bank(
             "fp_sidecar_suffix": ".fp.npy",
             "target_images_used": len(target_worklist),
             "single_reference_fallback": single_reference_fallback,
-            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "score_type": "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
             "match_counts_are_synthetic": single_reference_fallback,
             "selection_mode": selection_mode,
-            "max_source_images": max_source_images,
+            "support_images_used": len(support_image_ids),
+            "support_image_ids": support_image_ids,
             "top_k_features": top_k_features,
         }
         save_json_atomic(report_path, report)
@@ -1151,10 +1178,9 @@ def run_filter_adaptive(
     query_chunk: int,
     sim_floor: float,
     target_batch_size: int,
-    target_image_limit: int | None,
+    support_image_limit: int | None,
     num_workers: int,
     selection_mode: str,
-    max_source_images: int | None,
     top_k_features: int | None,
     resume: bool,
 ):
@@ -1178,10 +1204,9 @@ def run_filter_adaptive(
                 "query_chunk": query_chunk,
                 "sim_floor": sim_floor,
                 "target_batch_size": target_batch_size,
-                "target_image_limit": target_image_limit,
+                "support_image_limit": support_image_limit,
                 "num_workers": num_workers,
                 "selection_mode": selection_mode,
-                "max_source_images": max_source_images,
                 "top_k_features": top_k_features,
             },
             "per_class": {},
@@ -1209,20 +1234,26 @@ def run_filter_adaptive(
         grouped_bank = index_class_bank_grouped(os.path.join(input_dir, cat_name))
         if not grouped_bank:
             continue
-        limited_target_ids = _limit_target_image_ids(image_ids_by_cat.get(cat_id, []), target_image_limit)
+        support_image_ids = _shared_support_image_ids(
+            grouped_bank=grouped_bank,
+            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
+            support_image_limit=support_image_limit,
+            class_name=cat_name,
+        )
+        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
         target_worklist = build_target_worklist(
             image_dir=image_dir,
             images=images,
             anns_by_image=anns_by_image,
             cat_id=cat_id,
-            image_ids=limited_target_ids,
+            image_ids=support_image_ids,
         )
-        single_reference_fallback = len(grouped_bank) == 1
+        single_reference_fallback = len(support_bank) == 1
         if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
-            grouped_bank=grouped_bank,
+            grouped_bank=support_bank,
             target_worklist=target_worklist,
             model=model,
             device=device,
@@ -1235,7 +1266,6 @@ def run_filter_adaptive(
             target_references=None,
             early_accept=False,
             selection_mode=selection_mode,
-            max_source_images=max_source_images,
             class_name=cat_name,
         )
 
@@ -1250,10 +1280,16 @@ def run_filter_adaptive(
         scores_for_filter = scores.clone()
         scores_for_filter[~scored_mask] = -1.0
 
-        keep_mask, q75_value, adaptive_threshold, survivors_before_top_k = _apply_adaptive_top_k_features(
-            scores_for_filter=scores_for_filter,
-            top_k_features=top_k_features,
-        )
+        if single_reference_fallback:
+            keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
+            q75_value = None
+            adaptive_threshold = None
+            survivors_before_top_k = len(scores_for_filter)
+        else:
+            keep_mask, q75_value, adaptive_threshold, survivors_before_top_k = _apply_adaptive_top_k_features(
+                scores_for_filter=scores_for_filter,
+                top_k_features=top_k_features,
+            )
         keep_by_file = _split_scores_by_file(file_entries, keep_mask)
         files_saved, vectors_saved = save_class_outputs_from_disk(out_cat_dir, file_refs, keep_by_file, scores_by_file)
 
@@ -1273,7 +1309,7 @@ def run_filter_adaptive(
         kept_features = int(keep_mask.sum().item())
 
         report["per_class"][cat_name] = {
-            "status": "adaptive_q75_topk",
+            "status": "single_reference_raw_occupancy" if single_reference_fallback else "adaptive_q75_topk",
             "total_features": total_features,
             "kept_features": kept_features,
             "removed_features": total_features - kept_features,
@@ -1299,10 +1335,11 @@ def run_filter_adaptive(
             "score_sidecar_suffix": ".scores.npy",
             "target_images_used": len(target_worklist),
             "single_reference_fallback": single_reference_fallback,
-            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "score_type": "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
             "match_counts_are_synthetic": single_reference_fallback,
             "selection_mode": selection_mode,
-            "max_source_images": max_source_images,
+            "support_images_used": len(support_image_ids),
+            "support_image_ids": support_image_ids,
             "top_k_features": top_k_features,
         }
         save_json_atomic(report_path, report)
@@ -1344,10 +1381,9 @@ def run_filter_clustered_adaptive(
     query_chunk: int,
     sim_floor: float,
     target_batch_size: int,
-    target_image_limit: int | None,
+    support_image_limit: int | None,
     num_workers: int,
     selection_mode: str,
-    max_source_images: int | None,
     top_k_features: int | None,
     n_clusters: int | str,
     min_cluster_size: int,
@@ -1376,10 +1412,9 @@ def run_filter_clustered_adaptive(
                 "query_chunk": query_chunk,
                 "sim_floor": sim_floor,
                 "target_batch_size": target_batch_size,
-                "target_image_limit": target_image_limit,
+                "support_image_limit": support_image_limit,
                 "num_workers": num_workers,
                 "selection_mode": selection_mode,
-                "max_source_images": max_source_images,
                 "top_k_features": top_k_features,
             },
             "per_class": {},
@@ -1407,20 +1442,26 @@ def run_filter_clustered_adaptive(
         grouped_bank = index_class_bank_grouped(os.path.join(input_dir, cat_name))
         if not grouped_bank:
             continue
-        limited_target_ids = _limit_target_image_ids(image_ids_by_cat.get(cat_id, []), target_image_limit)
+        support_image_ids = _shared_support_image_ids(
+            grouped_bank=grouped_bank,
+            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
+            support_image_limit=support_image_limit,
+            class_name=cat_name,
+        )
+        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
         target_worklist = build_target_worklist(
             image_dir=image_dir,
             images=images,
             anns_by_image=anns_by_image,
             cat_id=cat_id,
-            image_ids=limited_target_ids,
+            image_ids=support_image_ids,
         )
-        single_reference_fallback = len(grouped_bank) == 1
+        single_reference_fallback = len(support_bank) == 1
         if len(target_worklist) < 2 and not single_reference_fallback:
             continue
 
         file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
-            grouped_bank=grouped_bank,
+            grouped_bank=support_bank,
             target_worklist=target_worklist,
             model=model,
             device=device,
@@ -1433,14 +1474,13 @@ def run_filter_clustered_adaptive(
             target_references=None,
             early_accept=False,
             selection_mode=selection_mode,
-            max_source_images=max_source_images,
             class_name=cat_name,
         )
 
         file_entries = [(fname, scores_by_file[fname]) for fname, _ in file_refs if fname in scores_by_file]
         if not file_entries:
             continue
-        features_for_filter = _load_flat_feature_bank(file_refs)
+        features_for_filter = None if single_reference_fallback else _load_flat_feature_bank(file_refs)
         scores = torch.cat([scores_by_file[fname] for fname, _ in file_refs if fname in scores_by_file])
         good = torch.cat([good_by_file[fname] for fname, _ in file_refs if fname in good_by_file])
         bad = torch.cat([bad_by_file[fname] for fname, _ in file_refs if fname in bad_by_file])
@@ -1449,13 +1489,24 @@ def run_filter_clustered_adaptive(
         scores_for_filter = scores.clone()
         scores_for_filter[~scored_mask] = -1.0
 
-        keep_mask, cluster_meta = _apply_clustered_adaptive_top_k_features(
-            features_for_filter=features_for_filter,
-            scores_for_filter=scores_for_filter,
-            top_k_features=top_k_features,
-            n_clusters=n_clusters,
-            min_cluster_size=min_cluster_size,
-        )
+        if single_reference_fallback:
+            keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
+            cluster_meta = {
+                "estimated_k": 0,
+                "used_k": 0,
+                "discarded_small_clusters": 0,
+                "kept_clusters": 0,
+                "cluster_thresholds": [],
+                "survivors_before_top_k": len(scores_for_filter),
+            }
+        else:
+            keep_mask, cluster_meta = _apply_clustered_adaptive_top_k_features(
+                features_for_filter=features_for_filter,
+                scores_for_filter=scores_for_filter,
+                top_k_features=top_k_features,
+                n_clusters=n_clusters,
+                min_cluster_size=min_cluster_size,
+            )
         keep_by_file = _split_scores_by_file(file_entries, keep_mask)
         files_saved, vectors_saved = save_class_outputs_from_disk(out_cat_dir, file_refs, keep_by_file, scores_by_file)
 
@@ -1476,7 +1527,11 @@ def run_filter_clustered_adaptive(
         kept_features = int(keep_mask.sum().item())
 
         report["per_class"][cat_name] = {
-            "status": "clustered_adaptive_q75_topk",
+            "status": (
+                "single_reference_raw_occupancy"
+                if single_reference_fallback
+                else "clustered_adaptive_q75_topk"
+            ),
             "total_features": total_features,
             "kept_features": kept_features,
             "removed_features": total_features - kept_features,
@@ -1508,10 +1563,11 @@ def run_filter_clustered_adaptive(
             "score_sidecar_suffix": ".scores.npy",
             "target_images_used": len(target_worklist),
             "single_reference_fallback": single_reference_fallback,
-            "score_type": "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+            "score_type": "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
             "match_counts_are_synthetic": single_reference_fallback,
             "selection_mode": selection_mode,
-            "max_source_images": max_source_images,
+            "support_images_used": len(support_image_ids),
+            "support_image_ids": support_image_ids,
             "top_k_features": top_k_features,
         }
         save_json_atomic(report_path, report)
@@ -1660,19 +1716,23 @@ def run_filter_from_scored_bank(
         )
         scores_for_filter = scores.clone()
         features_for_filter = None
-        if method == "clustered_adaptive_q75":
+        if method == "clustered_adaptive_q75" and not single_reference_fallback:
             features_for_filter = _load_flat_feature_bank(file_refs)
 
-        keep_mask, meta = _build_keep_mask_from_scored_bank(
-            method=method,
-            file_refs=file_refs,
-            scores_for_filter=scores_for_filter,
-            features_for_filter=features_for_filter,
-            keep_threshold=keep_threshold,
-            top_k_features=top_k_features,
-            n_clusters=n_clusters,
-            min_cluster_size=min_cluster_size,
-        )
+        if single_reference_fallback:
+            keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
+            meta = {"status": "single_reference_raw_occupancy"}
+        else:
+            keep_mask, meta = _build_keep_mask_from_scored_bank(
+                method=method,
+                file_refs=file_refs,
+                scores_for_filter=scores_for_filter,
+                features_for_filter=features_for_filter,
+                keep_threshold=keep_threshold,
+                top_k_features=top_k_features,
+                n_clusters=n_clusters,
+                min_cluster_size=min_cluster_size,
+            )
         keep_by_file = _split_scores_by_file([(fname, scores_by_file[fname]) for fname, _ in file_refs], keep_mask)
         files_saved, vectors_saved = save_class_outputs_from_disk(out_cat_dir, file_refs, keep_by_file, scores_by_file)
 
@@ -1720,7 +1780,7 @@ def run_filter_from_scored_bank(
             "single_reference_fallback": single_reference_fallback,
             "score_type": scored_meta.get(
                 "score_type",
-                "within_image_max_similarity" if single_reference_fallback else "cross_image_retrieval_precision",
+                "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
             ),
             "match_counts_are_synthetic": bool(scored_meta.get("match_counts_are_synthetic", False)),
             "score_sidecar_suffix": ".scores.npy",

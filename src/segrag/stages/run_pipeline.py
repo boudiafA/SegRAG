@@ -80,7 +80,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--save-mask-json", action="store_true")
     parser.add_argument("--stage5-strategies", nargs="+", default=None)
-    parser.add_argument("--stage1-max-images-per-class", type=int, default=None)
+    parser.add_argument(
+        "--stage1-max-images-per-class",
+        type=int,
+        default=None,
+        help=(
+            "Maximum N-shot support count. The same selected M<=N images build the "
+            "raw bank and score ICCD; each source image is excluded from its own score."
+        ),
+    )
 
     parser.add_argument("--max-images", type=int, default=None, help="Optional cap for Stage 2-4 evaluation images.")
     parser.add_argument("--max-references", type=int, default=None)
@@ -103,6 +111,9 @@ def _run_stage0(args: argparse.Namespace) -> dict:
 
 
 def _run_stage1(args: argparse.Namespace) -> dict:
+    if args.stage1_max_images_per_class is not None and args.stage1_max_images_per_class < 1:
+        raise ValueError("--stage1-max-images-per-class must be at least 1.")
+    support_limit = args.stage1_max_images_per_class
     score_args = argparse.Namespace(
         dataset_root=args.dataset_root,
         train_ann_file=args.train_ann_file,
@@ -123,11 +134,9 @@ def _run_stage1(args: argparse.Namespace) -> dict:
         scan_workers=8,
         checkpoint_name="_build_feature_bank_resume.json",
         selection_mode="top-k-images",
-        max_source_images=args.stage1_max_images_per_class or 100,
         top_k_features=None,
         keep_threshold=0.6,
         min_matches=3,
-        target_image_limit=100,
         query_chunk=256,
         target_batch_size=16,
         num_workers=8,

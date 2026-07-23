@@ -5,6 +5,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+import torch
 
 from segrag.reproducibility.protocol import (
     PAPER_PROTOCOL_VERSION,
@@ -16,6 +17,13 @@ from segrag.reproducibility.protocol import (
     validate_support_manifest,
 )
 from segrag.reproducibility.paper_benchmark import _prepare_workspace, _score_verification
+from segrag.modeling.iccd import (
+    _shared_support_image_ids,
+    _single_reference_keep_mask,
+    score_class,
+)
+from segrag.pipelines.main import DatasetLayout
+from segrag.stages.build_bank import _validate_support_image_limit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -149,3 +157,119 @@ def test_nonempty_workspace_requires_explicit_resume_or_overwrite(tmp_path):
         _prepare_workspace(Namespace(resume=False, overwrite=False), workspace)
 
     _prepare_workspace(Namespace(resume=True, overwrite=False), workspace)
+
+
+def test_shared_support_ids_use_one_exact_set():
+    grouped_bank = {10: [("10_1.pt", "/tmp/10_1.pt")], 20: [("20_2.pt", "/tmp/20_2.pt")]}
+
+    assert _shared_support_image_ids(
+        grouped_bank=grouped_bank,
+        annotated_image_ids=[10, 20],
+        support_image_limit=2,
+        class_name="crop",
+    ) == [10, 20]
+
+
+def test_shared_support_ids_reject_different_images():
+    grouped_bank = {10: [("10_1.pt", "/tmp/10_1.pt")], 20: [("20_2.pt", "/tmp/20_2.pt")]}
+
+    with pytest.raises(RuntimeError, match="support-set mismatch"):
+        _shared_support_image_ids(
+            grouped_bank=grouped_bank,
+            annotated_image_ids=[10, 30],
+            support_image_limit=2,
+            class_name="crop",
+        )
+
+
+def test_stage_cli_validates_one_support_limit():
+    _validate_support_image_limit(30)
+    _validate_support_image_limit(None)
+    with pytest.raises(ValueError, match="at least 1"):
+        _validate_support_image_limit(0)
+
+
+def test_iccd_scores_each_source_against_other_supports_only(tmp_path, monkeypatch):
+    grouped_bank = {}
+    prepared_targets = []
+    for image_id in (1, 2, 3):
+        feature_path = tmp_path / f"{image_id}_1.pt"
+        torch.save(torch.tensor([[1.0, 0.0]]), feature_path)
+        grouped_bank[image_id] = [(feature_path.name, str(feature_path))]
+        prepared_targets.append(
+            {
+                "image_id": image_id,
+                "grid": torch.tensor([[1.0, 0.0]]),
+                "mask": torch.tensor([True]),
+            }
+        )
+
+    monkeypatch.setattr(
+        "segrag.modeling.iccd.prepare_target_batches",
+        lambda **_kwargs: [prepared_targets],
+    )
+    _, _, good_by_file, bad_by_file = score_class(
+        grouped_bank=grouped_bank,
+        target_worklist=[],
+        model=None,
+        device="cpu",
+        query_chunk=8,
+        sim_floor=0.0,
+        target_batch_size=3,
+        num_workers=0,
+        keep_threshold=None,
+        min_matches=1,
+        target_references=None,
+        early_accept=False,
+        selection_mode="top-k-images",
+        class_name="crop",
+    )
+
+    assert all(int(vote.item()) == 2 for vote in good_by_file.values())
+    assert all(int(vote.item()) == 0 for vote in bad_by_file.values())
+
+
+def test_single_reference_uses_raw_occupancy_without_within_image_scoring(tmp_path):
+    feature_path = tmp_path / "1_1.pt"
+    raw_features = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
+    torch.save(raw_features, feature_path)
+
+    _, scores_by_file, good_by_file, bad_by_file = score_class(
+        grouped_bank={1: [(feature_path.name, str(feature_path))]},
+        target_worklist=[],
+        model=None,
+        device="cpu",
+        query_chunk=8,
+        sim_floor=0.0,
+        target_batch_size=1,
+        num_workers=0,
+        keep_threshold=None,
+        min_matches=3,
+        target_references=None,
+        early_accept=False,
+        selection_mode="top-k-images",
+        class_name="crop",
+    )
+
+    assert torch.equal(scores_by_file[feature_path.name], torch.ones(3))
+    assert torch.equal(good_by_file[feature_path.name], torch.full((3,), 3, dtype=torch.int32))
+    assert torch.equal(bad_by_file[feature_path.name], torch.zeros(3, dtype=torch.int32))
+    assert torch.equal(
+        _single_reference_keep_mask(num_features=3, top_k_features=2),
+        torch.tensor([True, True, False]),
+    )
+
+
+def test_generic_layout_isolates_shot_artifacts(tmp_path):
+    layout = DatasetLayout(
+        dataset_root=str(tmp_path / "dataset"),
+        train_ann_file=str(tmp_path / "dataset" / "train.json"),
+        val_ann_file=str(tmp_path / "dataset" / "test.json"),
+        train_image_dir=str(tmp_path / "dataset"),
+        val_image_dir=str(tmp_path / "dataset"),
+        artifact_root=str(tmp_path / "dataset" / "segrag_runs" / "strict_30shot"),
+    )
+
+    assert "strict_30shot" in layout.raw_feature_bank_dir
+    assert "strict_30shot" in layout.scored_feature_bank_dir
+    assert "strict_30shot" in layout.filtered_feature_bank_dir

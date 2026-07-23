@@ -8,7 +8,7 @@ The detailed image-level manifests are:
 - `agml_query_manifest.json`: evaluation/query image IDs, relative file names, sizes, and annotation IDs per class.
 - `agml_class_summary.csv`: compact per-class support/evaluation counts.
 
-Selection rule: for each class, support images are the first 30 sorted training image IDs containing that class after filtering to the selected AgML classes. Numeric image IDs are sorted numerically, with lexical fallback for non-numeric IDs. ICCD filters patch descriptors inside the selected support images but does not change the support image ID manifest.
+Selection rule: for each class, support images are the first 30 sorted training image IDs containing that class after filtering to the selected AgML classes. Numeric image IDs are sorted numerically, with lexical fallback for non-numeric IDs. These selected images are the complete labelled set used by ICCD: descriptors from image `s` are scored against the other selected support images and never against `s` itself. No additional scoring or calibration images are permitted.
 
 | Class | Category ID | Reference images | Reference anns. | Evaluation images | Evaluation anns. |
 |---|---:|---:|---:|---:|---:|

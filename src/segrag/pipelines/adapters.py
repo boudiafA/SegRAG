@@ -89,7 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="hybrid",
         choices=("absolute_similarity", "relative_similarity", "hybrid"),
     )
-    parser.add_argument("--reference-images-per-class", type=int, default=30)
+    parser.add_argument(
+        "--reference-images-per-class",
+        type=int,
+        default=30,
+        help=(
+            "Maximum N-shot support count. The same selected M<=N images build the "
+            "bank and provide ICCD scoring targets; self-comparison is excluded."
+        ),
+    )
     parser.add_argument(
         "--raw-bank-batch-size",
         type=int,

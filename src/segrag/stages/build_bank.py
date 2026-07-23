@@ -80,13 +80,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weights-path", default="./weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth")
     parser.add_argument("--mask-coverage-threshold", type=float, default=0.90)
     parser.add_argument("--features-per-class-threshold", type=int, default=None)
-    parser.add_argument("--max-images-per-class", type=int, default=None)
+    parser.add_argument(
+        "--support-images-per-class",
+        "--max-images-per-class",
+        dest="max_images_per_class",
+        type=int,
+        default=30,
+        help=(
+            "Maximum N-shot support count shared by raw-bank construction and ICCD "
+            "scoring. Each source image is scored against the other selected images."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--scan-workers", type=int, default=8)
     parser.add_argument("--checkpoint-name", default="_build_feature_bank_resume.json")
 
     parser.add_argument("--selection-mode", default="top-k-images")
-    parser.add_argument("--max-source-images", type=int, default=100)
     parser.add_argument(
         "--top-k-features",
         type=_parse_optional_int,
@@ -102,7 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-matches", type=int, default=3)
     parser.add_argument("--min-keep-ratio", type=float, default=0.30)
     parser.add_argument("--filter-mode", default="hard", choices=["hard", "reweight"])
-    parser.add_argument("--target-image-limit", type=int, default=100)
     parser.add_argument("--target-references", type=int, default=None)
     parser.add_argument("--query-chunk", type=int, default=256)
     parser.add_argument("--target-batch-size", type=int, default=16)
@@ -114,6 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_parser().parse_args(argv)
+
+
+def _validate_support_image_limit(support_image_limit: int | None) -> None:
+    if support_image_limit is not None and support_image_limit < 1:
+        raise ValueError("--support-images-per-class must be at least 1.")
 
 
 def _resolve_stage1_paths(args: argparse.Namespace) -> argparse.Namespace:
@@ -427,6 +440,7 @@ def run_build(args: argparse.Namespace) -> dict:
 
 def run(args: argparse.Namespace) -> dict:
     args = _resolve_stage1_paths(args)
+    _validate_support_image_limit(args.max_images_per_class)
     build_result = None
     filter_result = None
 
@@ -446,12 +460,11 @@ def run(args: argparse.Namespace) -> dict:
             query_chunk=args.query_chunk,
             sim_floor=args.sim_floor,
             target_batch_size=args.target_batch_size,
-            target_image_limit=args.target_image_limit,
+            support_image_limit=args.max_images_per_class,
             target_references=args.target_references,
             num_workers=args.num_workers,
             early_accept=args.early_accept,
             selection_mode=args.selection_mode,
-            max_source_images=args.max_source_images,
             top_k_features=args.top_k_features,
             resume=args.resume,
         )
@@ -466,6 +479,8 @@ def run(args: argparse.Namespace) -> dict:
             "resume": args.resume,
             "skip_build": args.skip_build,
             "skip_filter": args.skip_filter,
+            "support_images_per_class": args.max_images_per_class,
+            "self_comparison": False,
         },
         "build": build_result,
         "filter": filter_result,

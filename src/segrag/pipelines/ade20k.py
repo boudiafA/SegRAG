@@ -139,7 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference-images-per-class",
         type=int,
         default=30,
-        help="Maximum number of source images per class used while building the raw bank.",
+        help=(
+            "Maximum N-shot support count. The same selected M<=N images build the "
+            "bank and provide ICCD scoring targets; self-comparison is excluded."
+        ),
     )
     parser.add_argument(
         "--raw-bank-batch-size",
@@ -794,8 +797,10 @@ def export_ade20k(dataset_root: str, dataset_format: str, force_rebuild_export: 
 
 
 def _run_pipeline(args: argparse.Namespace, layout: ExportLayout) -> dict:
-    from segrag.pipelines import main
+    from segrag.pipelines import main as main_pipeline
 
+    if args.reference_images_per_class < 1:
+        raise ValueError("--reference-images-per-class must be at least 1.")
     pipeline_args = argparse.Namespace(
         dataset_root=layout.dataset_root,
         segmentation_method=args.segmentation_method,
@@ -817,6 +822,11 @@ def _run_pipeline(args: argparse.Namespace, layout: ExportLayout) -> dict:
         val_ann_file=layout.val_ann_file,
         train_image_dir=layout.train_image_dir,
         val_image_dir=layout.val_image_dir,
+        artifact_root=os.path.join(
+            layout.dataset_root,
+            "segrag_runs",
+            f"strict_{args.reference_images_per_class}shot",
+        ),
     )
 
     print("Resolved pipeline layout:")
@@ -824,9 +834,10 @@ def _run_pipeline(args: argparse.Namespace, layout: ExportLayout) -> dict:
     print(f"  val annotations   : {layout.val_ann_file}")
     print(f"  train images      : {layout.train_image_dir}")
     print(f"  val images        : {layout.val_image_dir}")
-    print(f"  raw feature bank  : {_raw_feature_bank_dir(layout.dataset_root)}")
-    print(f"  scored bank       : {_scored_feature_bank_dir(layout.dataset_root)}")
-    print(f"  filtered bank     : {_filtered_feature_bank_dir(layout.dataset_root)}")
+    print(f"  run artifacts     : {stage_layout.output_root}")
+    print(f"  raw feature bank  : {stage_layout.raw_feature_bank_dir}")
+    print(f"  scored bank       : {stage_layout.scored_feature_bank_dir}")
+    print(f"  filtered bank     : {stage_layout.filtered_feature_bank_dir}")
 
     results: dict[str, object] = {
         "config": {
@@ -839,6 +850,12 @@ def _run_pipeline(args: argparse.Namespace, layout: ExportLayout) -> dict:
             "resolved_scored_feature_bank_dir": stage_layout.scored_feature_bank_dir,
             "resolved_filtered_feature_bank_dir": stage_layout.filtered_feature_bank_dir,
             "dataset_format": layout.dataset_format,
+            "support_protocol": {
+                "requested_max_shot": args.reference_images_per_class,
+                "source_and_scoring_sets": "identical per class",
+                "self_comparison": False,
+                "comparisons_per_source": "actual class support count minus one",
+            },
         },
         "stages": {},
     }

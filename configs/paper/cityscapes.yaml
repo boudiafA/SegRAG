@@ -17,8 +17,6 @@ bank:
   score_keep_threshold: 0.60
   similarity_floor: 0.0
   min_matches: 3
-  max_source_images: 100
-  target_image_limit: 100
   query_chunk: 256
   target_batch_size: 16
   filter: adaptive_q75

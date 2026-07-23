@@ -2,7 +2,7 @@
 
 Reviewer concern: the exact AgML split manifest and image identifiers were not present in the manuscript or editor letter.
 
-Response text to use: We now explicitly document the AgML split used in the agricultural domain generalisation experiment. SegRAG was evaluated with a 30-shot reference setting per class where available. The support/reference images are selected from `train.json` as the first sorted image IDs containing the target class, and the evaluation set uses all `test.json` images containing the target class. The exact image identifiers, relative file names, image sizes, and annotation IDs are provided in the GitHub repository under `splits/agml/`.
+Response text to use: We now explicitly document the AgML split used in the agricultural domain generalisation experiment. SegRAG uses up to 30 reference images per class. The support/reference images are selected from `train.json` as the first sorted image IDs containing the target class, and the same selected images provide both the raw descriptors and the ICCD scoring targets. Each source image is excluded from its own score, so a class with \(M\) available supports uses \(M-1\) cross-image scoring targets per source descriptor. The evaluation set uses all `test.json` images containing the target class. The exact image identifiers, relative file names, image sizes, and annotation IDs are provided in the GitHub repository under `splits/agml/`.
 
 Per-class split sizes:
 

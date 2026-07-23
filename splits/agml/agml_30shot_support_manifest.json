@@ -19,7 +19,7 @@
   "split_source": "train.json",
   "shot_setting": 30,
   "selection_rule": "For each class, use the first 30 sorted training image IDs containing that class after filtering to the selected AgML classes. Numeric image IDs are sorted numerically; non-numeric IDs would use lexical fallback. If fewer than 30 images exist, all available images are used.",
-  "iccd_note": "ICCD filters patch descriptors inside the selected support images; it does not change the support image identifier manifest.",
+  "iccd_note": "The selected support images are the complete labelled ICCD set. A descriptor from image s is scored only against the other selected support images; self-comparison and additional calibration images are excluded.",
   "classes": [
     {
       "class_name": "apple",
