@@ -181,10 +181,16 @@ def _normalize_mask(mask, original_size: tuple[int, int]) -> np.ndarray:
 
 class Sam3ImageEvaluator:
     def __init__(self):
+        from segrag.utils.checkpoints import resolve_sam3_checkpoint
+
         print("Loading SAM3 image model...")
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        self.model = build_sam3_image_model(enable_inst_interactivity=True)
+        self.model = build_sam3_image_model(
+            checkpoint_path=resolve_sam3_checkpoint(),
+            load_from_HF=False,
+            enable_inst_interactivity=True,
+        )
         self.processor = Sam3Processor(self.model, confidence_threshold=0.4)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print("SAM3 image model loaded.")

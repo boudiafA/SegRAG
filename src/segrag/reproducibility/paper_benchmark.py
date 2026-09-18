@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -65,6 +66,16 @@ def _git_commit() -> str | None:
         ).strip()
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _source_fingerprint() -> str:
+    """Record the actual installed source, including uncommitted changes."""
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(bytes.fromhex(sha256_file(path)))
+    return digest.hexdigest()
 
 
 def _resolve_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, str]:
@@ -161,6 +172,12 @@ def _prepare_workspace(args: argparse.Namespace, workspace: dict[str, str]) -> N
             f"Paper workspace is not empty: {root}. Use --resume to continue the same "
             "protocol or --overwrite to rebuild it."
         )
+    if args.resume and root.is_dir() and any(root.iterdir()):
+        if not (root / "run_metadata.json").is_file():
+            raise ValueError(
+                f"Cannot verify resume provenance in {root}: run_metadata.json is missing. "
+                "Use a new output root or --overwrite."
+            )
     root.mkdir(parents=True, exist_ok=True)
 
 
@@ -168,7 +185,7 @@ def _validate_resume_metadata(metadata_path: str, metadata: dict[str, Any]) -> N
     if not os.path.isfile(metadata_path):
         return
     previous = load_json(metadata_path)
-    fields = ("protocol_version", "dataset", "shot", "fingerprints")
+    fields = ("protocol_version", "dataset", "shot", "fingerprints", "workload")
     mismatches = [field for field in fields if previous.get(field) != metadata.get(field)]
     if mismatches:
         raise ValueError(
@@ -267,14 +284,10 @@ def _build_bank(
         top_k_features=None,
         keep_threshold=float(bank["score_keep_threshold"]),
         min_matches=int(bank["min_matches"]),
-        min_keep_ratio=0.30,
-        filter_mode="hard",
-        target_references=None,
         query_chunk=int(bank["query_chunk"]),
         target_batch_size=int(bank["target_batch_size"]),
         num_workers=int(args.num_workers),
         sim_floor=float(bank["similarity_floor"]),
-        early_accept=False,
     )
     build_result = stage1_build.run_build(build_args)
     raw_counts = _bank_feature_counts(workspace["raw_bank"])
@@ -302,10 +315,6 @@ def _build_bank(
                 "skip_build",
                 "skip_filter",
                 "top_k_features",
-                "min_keep_ratio",
-                "filter_mode",
-                "target_references",
-                "early_accept",
             }
         },
         scored_feature_bank_dir=workspace["scored_bank"],
@@ -320,8 +329,6 @@ def _build_bank(
             method="adaptive_q75",
             keep_threshold=None,
             top_k_features=int(bank["top_k_features"]),
-            n_clusters="auto",
-            min_cluster_size=5,
             resume=args.resume,
         )
     )
@@ -411,13 +418,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     query_validation = validate_query_manifest(query_manifest, dataset, query_annotation)
     del query_annotation
 
-    if not args.validate_only:
-        _prepare_workspace(args, workspace)
     support_rows = selected_supports(support_manifest, args.shot)
     support_subset = build_exact_support_annotations(
         train_annotation,
         support_rows,
-        None if args.validate_only else workspace["support_annotations"],
+        None,
     )
     del train_annotation
     image_validation = _validate_image_files(paths, support_subset, query_manifest)
@@ -447,9 +452,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "config": config["_config_path"],
             "support_manifest": paths["support_manifest"],
             "query_manifest": paths["query_manifest"],
+            "train_annotations": paths["train_annotations"],
+            "query_annotations": paths["query_annotations"],
             "dinov3_weights": paths["dinov3_weights"],
         }
     )
+    fingerprints["segrag_source"] = _source_fingerprint()
     metadata = {
         "protocol_version": config["protocol_version"],
         "dataset": dataset,
@@ -461,6 +469,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "cuda": torch.version.cuda,
         "config": {key: value for key, value in config.items() if not key.startswith("_")},
         "fingerprints": fingerprints,
+        "workload": {
+            "max_images": args.max_images,
+            "save_mask_json": args.save_mask_json,
+        },
         "support_images": len(support_subset.get("images", [])),
         "support_annotations": len(support_subset.get("annotations", [])),
         "support_classes": len(support_subset.get("categories", [])),
@@ -474,8 +486,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "query_validation": query_validation,
         "image_validation": image_validation,
     }
-    if args.resume:
+    if args.resume and not args.overwrite:
         _validate_resume_metadata(workspace["run_metadata"], metadata)
+    _prepare_workspace(args, workspace)
+    save_json_atomic(workspace["support_annotations"], support_subset)
     save_json_atomic(workspace["run_metadata"], metadata)
 
     bank_result = _build_bank(

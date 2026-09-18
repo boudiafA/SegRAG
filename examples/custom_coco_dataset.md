@@ -23,7 +23,7 @@ Run:
 python scripts/run_pipeline.py \
   --dataset-root /path/to/dataset_root \
   --segmentation-method text-and-point \
-  --reference-images-per-class 20 \
+  --reference-images-per-class 5 \
   --resume
 ```
 
@@ -34,6 +34,6 @@ python scripts/run_adapters.py \
   --dataset-root /path/to/raw_dataset \
   --adapter auto \
   --segmentation-method text-and-point \
-  --reference-images-per-class 20 \
+  --reference-images-per-class 5 \
   --resume
 ```

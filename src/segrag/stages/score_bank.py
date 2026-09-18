@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scan-workers", type=int, default=8)
     parser.add_argument("--checkpoint-name", default="_build_feature_bank_resume.json")
 
-    parser.add_argument("--selection-mode", default="top-k-images")
+    parser.add_argument("--selection-mode", default="top-k-images", choices=("top-k-images",))
     parser.add_argument(
         "--top-k-features",
         type=_parse_optional_int,

@@ -11,7 +11,7 @@ dependencies:
     - huggingface_hub
     - iopath
     - lvis
-    - numpy==1.26
+    - numpy>=1.26,<3
     - omegaconf
     - pandas
     - pillow
@@ -19,8 +19,7 @@ dependencies:
     - pycocotools
     - PyYAML
     - regex # needed for dino.txt
-    - scikit-learn
-    - scikit-learn-intelex
+    - scipy
     - submitit
     - termcolor
     - torch 

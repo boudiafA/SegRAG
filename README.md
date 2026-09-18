@@ -1,4 +1,6 @@
-# SegRAG: Training-Free Retrieval-Augmented Semantic Segmentation
+# SegRAG: Retrieval Augmented Spatial Prompting for Open Vocabulary Semantic Segmentation
+
+Accepted at **Information Processing & Management**.
 
 SegRAG is a training-free semantic segmentation framework that augments SAM 3
 with spatial evidence retrieved from a class-indexed DINOv3 feature bank. It is
@@ -35,12 +37,18 @@ Create the environment and install SegRAG:
 
 ```bash
 cd ~/RAG-SAM/SegRAG
-conda env create -f environment.yml
-conda activate segrag
-pip install -e .
+conda env create -f environment.paper.yml
+conda activate segrag-paper
+pip install -e ../sam3 --no-deps
+pip install -e . --no-deps
 ```
 
-Install SAM 3 following the official SAM 3 repository instructions. SegRAG
+For paper reproduction, use the tested third-party commits in
+[the reproduction guide](docs/PAPER_REPRODUCTION.md), rather than moving
+repository heads. SAM 3 weights require access to the gated `facebook/sam3`
+model on Hugging Face. SegRAG pins the tested weight revision and verifies its
+hash. To use an existing copy, set `SEGRAG_SAM3_CHECKPOINT=/path/to/sam3.pt`.
+The model repositories and weights retain their upstream licenses. SegRAG
 resolves DINOv3 from `../dinov3` by default. Override paths if your checkout or
 weights are elsewhere:
 
@@ -196,6 +204,9 @@ text-only SAM 3.
 
 ## Results
 
+The tables below report values from the accepted Round 2 manuscript. They are
+paper-reported results, not new measurements from the release cleanup.
+
 ### Standard Benchmarks
 
 All values below are mIoU (%). SegRAG uses a DINOv3 ViT-L/16 feature bank and
@@ -206,14 +217,18 @@ SegRAG rows use the fixed manifests in [`splits/standard/`](splits/standard/).
 |---|---:|---:|---:|---:|---:|
 | SAM 3 | text | 52.26 | 64.78 | 65.62 | 54.92 |
 | Grounded SAM | text | 48.76 | 47.41 | 62.38 | 47.33 |
-| GF-SAM | 1-shot | 43.66 | 35.17 | 53.29 | 35.20 |
-| GF-SAM | 5-shot | 50.65 | 40.04 | 62.21 | 44.20 |
-| CorrCLIP | text | 26.90 | 49.40 | 48.80 | - |
+| GF-SAM | 1-shot | 43.66 | 35.17 | 53.29 | 35.20* |
+| GF-SAM | 5-shot | 50.65 | 40.04 | 62.21 | 44.20* |
+| CorrCLIP | text | 26.90* | 49.40* | 48.80* | - |
 | **SegRAG** | **1-shot** | **53.52** | **66.35** | **65.91** | **56.71** |
 | **SegRAG** | **5-shot** | **54.77** | **67.25** | **66.77** | **58.84** |
 
 SegRAG 5-shot improves over SAM 3 text-only by `+2.51` on ADE20K-150, `+2.47`
 on Cityscapes, `+1.15` on PC-59, and `+3.92` on LVIS.
+
+`*` Literature-reported context, not a matched local evaluation. In particular,
+the GF-SAM LVIS paper protocol is not the SegRAG LVIS protocol. Other methods
+also use different backbones and decoders; SAM 3 is the controlled baseline.
 
 ![Qualitative comparison](docs/assets/general_comparison.jpg)
 
@@ -242,33 +257,21 @@ python scripts/run_pipeline.py \
   --save-mask-json
 ```
 
-The AgML values below are archived historical measurements and are not an
-expected-score check for the corrected strict-30 runner. They must be
-re-evaluated before being reported as strict 30-shot results.
+AgML has 317 support-class entries and 2,183 query-class pairs. Ten classes
+have 30 supports; sugarbeet weed has 17. This is an **up-to-30-shot** setting.
 
-| Class | Reference images | Evaluation images |
-|---|---:|---:|
-| apple | 30/30 | 134 |
-| bean leaf | 30/30 | 478 |
-| bell pepper | 30/30 | 204 |
-| carrot | 30/30 | 12 |
-| cauliflower | 30/30 | 297 |
-| flower | 30/30 | 39 |
-| grape | 30/30 | 107 |
-| rice | 30/30 | 45 |
-| sugarbeet weed | 17/30 | 25 |
-| tomato | 30/30 | 89 |
-| weed | 30/30 | 753 |
+The accepted paper reports **59.24% mean IoU** for SegRAG versus **25.27%** for
+SAM 3 text-only, a gain of **33.97 percentage points**. The per-class values
+below reproduce the paper's agricultural comparison table.
 
-
-| Class | SAM 3 Text IoU | SegRAG IoU | Delta |
+| Class | SAM 3 IoU (%) | SegRAG IoU (%) | Gain (points) |
 |---|---:|---:|---:|
 | apple | 37.27 | 37.65 | +0.38 |
 | bean leaf | 4.81 | 63.91 | +59.10 |
-| bell pepper | 74.21 | 81.16 | +6.94 |
+| bell pepper | 74.21 | 81.16 | +6.95 |
 | carrot | 0.00 | 19.90 | +19.90 |
 | cauliflower | 0.00 | 95.36 | +95.36 |
-| flower | 31.36 | 40.68 | +9.33 |
+| flower | 31.36 | 40.68 | +9.32 |
 | grape | 54.93 | 71.21 | +16.28 |
 | rice | 0.00 | 39.93 | +39.93 |
 | sugarbeet weed | 0.00 | 80.22 | +80.22 |
@@ -276,28 +279,32 @@ re-evaluated before being reported as strict 30-shot results.
 | weed | 8.26 | 53.78 | +45.52 |
 | **Mean** | **25.27** | **59.24** | **+33.97** |
 
+The separate strict-rerun artifact differs from these paper-reported values.
+See [result provenance](docs/RESULT_PROVENANCE.md) for that distinction and
+the scope of reproduction; it is not substituted into the paper-results table.
+
 ![Agricultural comparison](docs/assets/agriculture_comparison.jpg)
 
-### Ablations
+### Controlled Component Ablation
 
-Component ablation on the full AgML evaluation set:
+The final controlled AgML ablation uses identical seed-17 five-shot supports,
+2,183 query-class pairs, DINOv3 and SAM 3 checkpoints. All values are percentages.
+These replace the superseded mixed-protocol component and shot-sweep tables.
 
 | Configuration | IoU | mIoU | F1 | Precision | Recall |
 |---|---:|---:|---:|---:|---:|
-| SAM 3 text-only | 0.317 | 0.253 | 0.481 | 0.849 | 0.336 |
-| Raw bank + TSG | 0.274 | 0.444 | 0.430 | 0.312 | 0.691 |
-| ICCD bank, no TSG | 0.271 | 0.388 | 0.426 | 0.314 | 0.661 |
-| **SegRAG full** | **0.628** | **0.592** | **0.772** | **0.857** | **0.702** |
+| SAM 3 text-only | 31.69 | 25.27 | 48.13 | 84.92 | 33.58 |
+| ICCD + TSG, point-only | 35.95 | 44.23 | 52.89 | 75.32 | 40.75 |
+| Raw bank, dense points, text+point | 27.53 | 32.29 | 43.18 | 30.90 | 71.64 |
+| Raw bank + TSG, text+point | 29.26 | 46.69 | 45.27 | 31.86 | 78.17 |
+| ICCD, dense points, text+point | 27.66 | 38.18 | 43.33 | 32.13 | 66.53 |
+| **ICCD + TSG, text+point** | **59.44** | **59.29** | **74.56** | **84.70** | **66.58** |
 
-Shot-count ablation:
-
-| References Per Class | IoU | mIoU | F1 | Recall |
-|---:|---:|---:|---:|---:|
-| 1 | 0.549 | 0.585 | 0.709 | 0.610 |
-| 5 | 0.570 | 0.585 | 0.726 | 0.631 |
-| 10 | 0.550 | 0.587 | 0.710 | 0.610 |
-| 20 | 0.617 | 0.592 | 0.763 | 0.687 |
-| 30 | 0.628 | 0.592 | 0.772 | 0.702 |
+The full TSG selector changes both spatial organization and prompt count;
+these results do not isolate topology alone. Point-only returns an empty mask
+on zero-point queries; joint prompting falls back to text-only. The release
+entrypoints reproduce the main pipeline, not the full historical ablation
+harness.
 
 ## Repository Layout
 
@@ -334,6 +341,8 @@ segrag-prepare-pascal5i
 
 ```bash
 PYTHONPATH=src python -m compileall -q src scripts tests
+pip install -e '.[dev]' --no-deps
+pip install pytest
 PYTHONPATH=src python -m pytest -q
 python tools/verify_paper_release.py
 PYTHONPATH=src python scripts/evaluate_paper.py --help
@@ -343,4 +352,12 @@ PYTHONPATH=src python scripts/evaluate_sam3.py --help
 
 ## Citation
 
-The citation entry will be added after paper metadata is finalized.
+The paper is accepted at Information Processing & Management. A citation entry
+will be added when the DOI and final publication metadata are available.
+
+## Release Scope
+
+See [the release audit](docs/RELEASE_AUDIT.md) for supported entrypoints,
+removed experiments, preserved historical versions, and validation limits.
+No model weights, datasets, generated banks, predictions, or private review
+correspondence are included in the source release.

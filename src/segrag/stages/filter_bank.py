@@ -4,7 +4,6 @@ Stage 1 filtering from a reusable scored bank.
 Supported methods:
 - `fixed`
 - `adaptive_q75`
-- `clustered_adaptive_q75`
 """
 
 from __future__ import annotations
@@ -16,14 +15,7 @@ from segrag.stages.build_bank import _parse_optional_int, _parse_optional_thresh
 from segrag.modeling.iccd import run_filter_from_scored_bank
 
 
-METHODS = ("fixed", "adaptive_q75", "clustered_adaptive_q75")
-
-
-def _parse_cluster_count(value: str) -> int | str:
-    lowered = value.strip().lower()
-    if lowered == "auto":
-        return "auto"
-    return int(value)
+METHODS = ("fixed", "adaptive_q75")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,8 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=10000,
         help="Maximum kept features per class. Use `none` to disable the cap.",
     )
-    parser.add_argument("--n-clusters", type=_parse_cluster_count, default="auto")
-    parser.add_argument("--min-cluster-size", type=int, default=5)
     parser.add_argument("--resume", action="store_true")
     return parser
 
@@ -62,8 +52,6 @@ def run(args: argparse.Namespace) -> dict:
         method=args.method,
         keep_threshold=args.keep_threshold,
         top_k_features=args.top_k_features,
-        n_clusters=args.n_clusters,
-        min_cluster_size=args.min_cluster_size,
         resume=args.resume,
     )
     return {
@@ -73,8 +61,6 @@ def run(args: argparse.Namespace) -> dict:
             "method": args.method,
             "keep_threshold": args.keep_threshold,
             "top_k_features": args.top_k_features,
-            "n_clusters": args.n_clusters,
-            "min_cluster_size": args.min_cluster_size,
             "resume": args.resume,
         },
         "filter": result,

@@ -1,0 +1,162 @@
+{
+  "description": "Archived corrected strict up-to-30-shot AgML result; not the accepted manuscript's historical 59.24% value.",
+  "source_artifact": "job3_corrected_up_to_30shot_v2/AgML/deterministic_first30/full/workspace/evaluation_results_text_and_points_sam3_hybrid/results.json",
+  "source_sha256": "466f63fdff00ef8bd290b6c86b5134e8aee77839ecbc122662d86039971f92f9",
+  "source_date": "2026-08-30",
+  "metric_scale": "fraction",
+  "protocol": {
+    "support_rule": "first 30 sorted train image IDs per class, or all when fewer",
+    "same_supports_for_build_and_score": true,
+    "self_comparison": false,
+    "support_class_entries": 317,
+    "query_class_pairs": 2183,
+    "classes": 11
+  },
+  "config": {
+    "feature_matching_approach": "hybrid",
+    "max_images": null,
+    "max_references": 10000,
+    "max_points_per_class": null,
+    "num_workers": 0,
+    "prefetch_factor": 16,
+    "num_points": 10,
+    "sim_threshold": 0.8,
+    "peak_threshold": 0.2,
+    "min_peak_distance": 10,
+    "suppression_margin": 0,
+    "no_suppression": false,
+    "loose_threshold": 0.8,
+    "min_component_size": 4,
+    "hybrid_validation_threshold": 0.8,
+    "cleanup_every": 50,
+    "elapsed_seconds": 2951.5298359394073,
+    "images_evaluated": 2183,
+    "resume": true
+  },
+  "global": {
+    "IoU": 0.5759090807159618,
+    "mIoU": 0.584508608598833,
+    "F1": 0.7308912522470099,
+    "PixelPrecision": 0.8131821223463938,
+    "PixelRecall": 0.6637248746981341,
+    "mAP50": 0.2309461364151524,
+    "pixel_tp": 221761454,
+    "pixel_fp": 50946772,
+    "pixel_fn": 112355079
+  },
+  "per_category": [
+    {
+      "IoU": 0.6393668315049846,
+      "F1": 0.7800167957747783,
+      "PixelPrecision": 0.7217097010601755,
+      "PixelRecall": 0.8485732240359749,
+      "AP50": 0.29283209026865115,
+      "gt_instances": 65604,
+      "predictions": 31279,
+      "category": "bean_leaf"
+    },
+    {
+      "IoU": 0.37554268915329464,
+      "F1": 0.5460284033561433,
+      "PixelPrecision": 0.4295900910309092,
+      "PixelRecall": 0.7490565516592312,
+      "AP50": 0.3086876796048117,
+      "gt_instances": 3821,
+      "predictions": 7190,
+      "category": "apple"
+    },
+    {
+      "IoU": 0.4541399395605051,
+      "F1": 0.6246165547144836,
+      "PixelPrecision": 0.9289681694210915,
+      "PixelRecall": 0.4704772475806998,
+      "AP50": 0.03340528781609502,
+      "gt_instances": 3088,
+      "predictions": 7510,
+      "category": "weed"
+    },
+    {
+      "IoU": 0.8021608070903833,
+      "F1": 0.890221121150098,
+      "PixelPrecision": 0.8864008950816517,
+      "PixelRecall": 0.8940744187047585,
+      "AP50": 0.055926318740422754,
+      "gt_instances": 1955,
+      "predictions": 410,
+      "category": "sugarbeet_weed"
+    },
+    {
+      "IoU": 0.4481438953450083,
+      "F1": 0.6189217753643768,
+      "PixelPrecision": 0.5144865638640694,
+      "PixelRecall": 0.7765538039864498,
+      "AP50": 0.012752224866855011,
+      "gt_instances": 1872,
+      "predictions": 720,
+      "category": "rice"
+    },
+    {
+      "IoU": 0.40262415085226994,
+      "F1": 0.5741012666973192,
+      "PixelPrecision": 0.45302722021561714,
+      "PixelRecall": 0.7834945454765473,
+      "AP50": 0.1979139993397428,
+      "gt_instances": 1337,
+      "predictions": 1788,
+      "category": "flower"
+    },
+    {
+      "IoU": 0.9521066626918798,
+      "F1": 0.9754658194536987,
+      "PixelPrecision": 0.9827538328913065,
+      "PixelRecall": 0.968285104793539,
+      "AP50": 0.3117879004660823,
+      "gt_instances": 830,
+      "predictions": 4499,
+      "category": "cauliflower"
+    },
+    {
+      "IoU": 0.8124007167196063,
+      "F1": 0.896491277260173,
+      "PixelPrecision": 0.9180412298128808,
+      "PixelRecall": 0.8759298406998239,
+      "AP50": 0.48949941314497813,
+      "gt_instances": 701,
+      "predictions": 645,
+      "category": "bell_pepper"
+    },
+    {
+      "IoU": 0.6195598057573248,
+      "F1": 0.7650965448202285,
+      "PixelPrecision": 0.7594192591954516,
+      "PixelRecall": 0.7708593545983509,
+      "AP50": 0.6985922203544876,
+      "gt_instances": 550,
+      "predictions": 899,
+      "category": "tomato"
+    },
+    {
+      "IoU": 0.7307423397598364,
+      "F1": 0.844426490266872,
+      "PixelPrecision": 0.8152368385558771,
+      "PixelRecall": 0.8757840417713365,
+      "AP50": 0.008345611898756378,
+      "gt_instances": 346,
+      "predictions": 6886,
+      "category": "grape"
+    },
+    {
+      "IoU": 0.19280685615207024,
+      "F1": 0.32328260884424265,
+      "PixelPrecision": 0.19908490899600964,
+      "PixelRecall": 0.8594350022410931,
+      "AP50": 0.13066475406579375,
+      "gt_instances": 37,
+      "predictions": 182,
+      "category": "carrot"
+    }
+  ],
+  "missing_prompt_cache_by_category": {},
+  "text_only_fallbacks": 373,
+  "combined_prediction_errors": 0
+}

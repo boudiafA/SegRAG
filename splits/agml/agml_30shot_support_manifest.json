@@ -1,6 +1,5 @@
 {
   "dataset": "AgML agricultural segmentation selection used by SegRAG",
-  "dataset_root_used_locally": "/mnt/e/Desktop/AgML/datasets_sorted/segmentation",
   "selected_classes": [
     "apple",
     "bean_leaf",

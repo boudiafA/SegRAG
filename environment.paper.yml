@@ -1,17 +1,15 @@
 name: segrag-paper
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
 dependencies:
   - python=3.12.12
   - pip
-  - pytorch=2.7.0
-  - torchvision=0.22.0
-  - pytorch-cuda=12.6
   - numpy=2.2.6
   - pillow=11.3.0
   - pip:
+    - --extra-index-url https://download.pytorch.org/whl/cu126
+    - torch==2.7.0+cu126
+    - torchvision==0.22.0+cu126
     - ftfy==6.1.1
     - huggingface_hub
     - iopath>=0.1.10
@@ -22,7 +20,7 @@ dependencies:
     - pycocotools
     - PyYAML==6.0.3
     - regex
-    - scikit-learn
+    - scipy
     - submitit
     - termcolor
     - timm>=1.0.17

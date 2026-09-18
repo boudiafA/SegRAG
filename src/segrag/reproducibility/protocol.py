@@ -86,9 +86,16 @@ def validate_support_manifest(manifest: dict[str, Any], dataset: str, shot: int)
         )
 
     rows = selected_supports(manifest, shot)
+    if not rows:
+        raise ValueError(f"Invalid {shot}-shot support manifest: no selected support images.")
     by_class: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_class[int(row["class_id"])].append(row)
+    declared_classes = manifest.get("valid_classes_by_shot", {}).get(str(shot))
+    if declared_classes is not None:
+        declared_ids = {int(row["class_id"]) for row in declared_classes}
+        if declared_ids != set(by_class):
+            raise ValueError("Support manifest is missing images for declared valid classes.")
 
     bad_counts = {
         class_id: len(class_rows)
@@ -135,6 +142,8 @@ def validate_query_manifest(manifest: dict[str, Any], dataset: str, annotation: 
             f"Query manifest dataset {manifest.get('dataset')!r} does not match {dataset!r}."
         )
     expected = query_pairs(annotation)
+    if not expected:
+        raise ValueError("Query annotations contain no evaluation pairs.")
     actual = {
         (int(row["image_id"]), int(row["class_id"]))
         for row in manifest.get("items", [])

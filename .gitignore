@@ -5,6 +5,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
+/build/
+/dist/
 
 # Local/editor metadata
 .codex
@@ -42,6 +45,7 @@ mask_json/
 predictions/
 visualizations/
 *_visualizations*/
+segrag_runs/
 *.npy
 *.npz
 *.pkl

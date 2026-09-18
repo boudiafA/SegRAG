@@ -19,11 +19,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError("lvis is required. Install with `pip install lvis`.") from exc
 
-try:
-    from scipy.ndimage import maximum_filter
-    _SCIPY_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _SCIPY_AVAILABLE = False
+from scipy.ndimage import maximum_filter
 
 
 MAX_REFERENCES = 10000
@@ -182,15 +178,11 @@ def _compute_best_sim(query_flat: torch.Tensor, bank_dev: torch.Tensor) -> torch
 
 
 def find_peaks(heatmap_2d: np.ndarray, min_distance: int = 3, abs_threshold: float = 0.05) -> list[tuple[int, int, float]]:
-    if _SCIPY_AVAILABLE:
-        size = 2 * min_distance + 1
-        local_max = maximum_filter(heatmap_2d, size=size)
-        is_peak = (heatmap_2d == local_max) & (heatmap_2d > abs_threshold)
-        rows, cols = np.where(is_peak)
-        scores = heatmap_2d[rows, cols]
-    else:
-        rows, cols = np.where(heatmap_2d > abs_threshold)
-        scores = heatmap_2d[rows, cols]
+    size = 2 * min_distance + 1
+    local_max = maximum_filter(heatmap_2d, size=size)
+    is_peak = (heatmap_2d == local_max) & (heatmap_2d > abs_threshold)
+    rows, cols = np.where(is_peak)
+    scores = heatmap_2d[rows, cols]
     order = np.argsort(-scores)
     return [(int(rows[i]), int(cols[i]), float(scores[i])) for i in order]
 

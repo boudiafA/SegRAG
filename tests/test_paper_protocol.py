@@ -134,6 +134,21 @@ def test_query_validation_rejects_duplicate_pairs():
         validate_query_manifest(manifest, "tiny", annotation)
 
 
+def test_empty_support_manifest_is_not_a_valid_run():
+    manifest = {"protocol_version": PAPER_PROTOCOL_VERSION, "dataset": "tiny",
+                "shot_items": {"1": []}}
+    with pytest.raises(ValueError, match="no selected support images"):
+        validate_support_manifest(manifest, "tiny", 1)
+
+
+def test_missing_declared_support_class_is_rejected():
+    manifest = {"protocol_version": PAPER_PROTOCOL_VERSION, "dataset": "tiny",
+                "valid_classes_by_shot": {"1": [{"class_id": 1}, {"class_id": 2}]},
+                "shot_items": {"1": [{"class_id": 1, "image_id": 10, "rank_within_class": 1}]}}
+    with pytest.raises(ValueError, match="declared valid classes"):
+        validate_support_manifest(manifest, "tiny", 1)
+
+
 def test_score_verification_uses_archived_miou():
     config = {
         "reported_miou": {"5": 0.5},
@@ -156,6 +171,9 @@ def test_nonempty_workspace_requires_explicit_resume_or_overwrite(tmp_path):
     with pytest.raises(FileExistsError, match="--resume"):
         _prepare_workspace(Namespace(resume=False, overwrite=False), workspace)
 
+    with pytest.raises(ValueError, match="run_metadata.json is missing"):
+        _prepare_workspace(Namespace(resume=True, overwrite=False), workspace)
+    (Path(workspace["root"]) / "run_metadata.json").write_text("{}")
     _prepare_workspace(Namespace(resume=True, overwrite=False), workspace)
 
 
@@ -217,11 +235,7 @@ def test_iccd_scores_each_source_against_other_supports_only(tmp_path, monkeypat
         sim_floor=0.0,
         target_batch_size=3,
         num_workers=0,
-        keep_threshold=None,
         min_matches=1,
-        target_references=None,
-        early_accept=False,
-        selection_mode="top-k-images",
         class_name="crop",
     )
 
@@ -243,11 +257,7 @@ def test_single_reference_uses_raw_occupancy_without_within_image_scoring(tmp_pa
         sim_floor=0.0,
         target_batch_size=1,
         num_workers=0,
-        keep_threshold=None,
         min_matches=3,
-        target_references=None,
-        early_accept=False,
-        selection_mode="top-k-images",
         class_name="crop",
     )
 

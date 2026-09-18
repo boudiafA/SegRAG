@@ -20,15 +20,18 @@ separate target-image or calibration-image allowance is used.
 For one-shot, DINOv3 foreground descriptors from the rank-1 support image are
 used directly after the 0.90 occupancy gate. Cross-image ICCD scoring requires
 another reference image and is therefore not defined for this setting. The
-paper runner deliberately does not call the newer within-image fallback in the
-generic ICCD module.
+paper runner and generic ICCD path both retain occupancy-gated descriptors
+without within-image scoring. The generic scored-bank path writes synthetic
+compatibility sidecars for one-shot; these are not measured coherence scores.
 
 For five-shot, ICCD scores each support descriptor through cross-image
 same-class retrieval. The scored bank first keeps scores >= 0.60, then applies
 the class-adaptive threshold `clip(0.90 * q75, 0.65, 0.82)` and retains at most
 10,000 descriptors per class. TSG uses similarity, loose, and validation
 thresholds of 0.80, a minimum connected-component size of 4, minimum peak
-distance of 10, and at most 10 points.
+distance of 10 patch units. The hybrid TSG path has **no point-count cap**.
+The shared `num_points: 10` option applies only to the alternative absolute
+matcher; it does not truncate hybrid prompts. `max_points_per_class` is unset.
 
 ## Expected Results
 
@@ -49,7 +52,16 @@ of 0.0005 on the fractional scale (0.05 percentage points). Add
 ## Dependencies
 
 Install SegRAG, official DINOv3, and official SAM 3 as described in the main
-README. The exact tested repositories, checkpoint hashes, Hugging Face SAM 3
+README. For the frozen protocol, check out the tested third-party commits
+before installation:
+
+```bash
+git -C /path/to/dinov3 checkout 54694f7627fd815f62a5dcc82944ffa6153bbb76
+git -C /path/to/sam3 checkout d0b1b9d5aafeac07e893ab87e002eaaaa7381802
+```
+
+Use fresh third-party clones for these commands if you have local modifications.
+The checkpoint hashes, Hugging Face SAM 3
 revision, and package versions are recorded in
 `reproducibility/software.json`. Verify the release and DINOv3 checkpoint:
 
@@ -70,9 +82,12 @@ python tools/verify_paper_release.py \
   --dinov3-weights /path/to/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 ```
 
-SAM 3 is loaded by its official `build_sam3_image_model()` function from the
-gated `facebook/sam3` Hugging Face repository. Authenticate with an account
-that has accepted the model terms before running evaluation.
+SAM 3 is loaded by its official `build_sam3_image_model()` function with the
+checkpoint pinned to the Hugging Face revision in `reproducibility/software.json`.
+The loader verifies the SHA-256 hash before constructing the model. Authenticate
+with an account that has accepted the gated `facebook/sam3` model terms, or
+set `SEGRAG_SAM3_CHECKPOINT=/path/to/sam3.pt` to use the tested local checkpoint
+without a download. The same hash check applies to local weights.
 
 ## Dataset Layout
 
@@ -139,5 +154,26 @@ Each dataset/shot workspace contains its reconstructed support annotations,
 raw/scored/filtered banks, prompt cache, predictions, run metadata, file
 fingerprints, and final summary. An interrupted run may be continued with
 `--resume`. Resume refuses metadata from another config, manifest, checkpoint,
-dataset, or shot. Use `--overwrite` only when deliberately rebuilding that
-workspace from scratch.
+dataset, shot, annotation content, SegRAG source, or smoke-test image limit.
+A nonempty workspace without run metadata cannot be resumed. Enabling mask
+export midway through a run is also rejected because earlier masks would be
+missing. Older releases lack the new provenance fields; keep their outputs
+separate rather than resuming them with this release. Use `--overwrite` only
+when deliberately rebuilding that workspace from scratch.
+
+## Scope And Historical Versions
+
+The general runner selects the first N sorted support IDs from the supplied
+training annotations; it does not reproduce the standard benchmark manifests
+unless those annotations have already been restricted to the released pairs.
+Use the dedicated paper evaluator for the standard results.
+
+The accepted paper's AgML largest-reference result has a known artifact
+discrepancy. See [result provenance](RESULT_PROVENANCE.md) before treating an
+AgML value as an expected reproduction target.
+
+Superseded workflows remain accessible in Git history: `archive/legacy-main`,
+`legacy-main-a08bc00`, and `paper-release-1.1.0`. The supported source tree no
+longer exposes the clustered ICCD experiment or post-hoc mask merging. Joint
+text-and-point inference is a single grounding pass, not a union of separate
+text-only and point-only predictions.

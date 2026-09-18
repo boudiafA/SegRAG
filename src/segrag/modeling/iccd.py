@@ -5,7 +5,7 @@ This module preserves the current optimized behavior:
 - resumable per-class filtering
 - target-batch preparation once per class
 - DINOv3 dense feature extraction matching the current bank build
-- support for `target-references` and `top-k-images` selection modes
+- exact shared source/target support sets with self-image exclusion
 """
 
 from __future__ import annotations
@@ -260,39 +260,6 @@ def _split_scores_by_file(file_entries: list[tuple[str, torch.Tensor]], flat_kee
     return keep_by_file
 
 
-def _compute_keep_mask(scores: torch.Tensor, keep_threshold: float | None, min_keep_ratio: float):
-    if keep_threshold is None:
-        return torch.ones_like(scores, dtype=torch.bool), False
-    scored_mask = scores >= 0
-    keep_mask = (scores >= keep_threshold) | (~scored_mask)
-    min_required = max(1, int(min_keep_ratio * scores.shape[0]))
-    if int(keep_mask.sum().item()) < min_required:
-        rank_scores = scores.clone()
-        rank_scores[~scored_mask] = 0.5
-        _, top_idx = rank_scores.topk(min_required)
-        keep_mask = torch.zeros_like(keep_mask)
-        keep_mask[top_idx] = True
-        floor_applied = True
-    else:
-        floor_applied = False
-    return keep_mask, floor_applied
-
-
-def _apply_target_references_cap(keep_mask: torch.Tensor, scores_for_filter: torch.Tensor, target_references: int | None):
-    if target_references is None:
-        return keep_mask, False
-    kept_count = int(keep_mask.sum().item())
-    if kept_count <= target_references:
-        return keep_mask, False
-    capped_keep = torch.zeros_like(keep_mask)
-    kept_indices = keep_mask.nonzero(as_tuple=True)[0]
-    kept_scores = scores_for_filter[kept_indices].clone()
-    kept_scores[kept_scores < 0] = 0.5
-    _, top_idx = kept_scores.topk(target_references)
-    capped_keep[kept_indices[top_idx]] = True
-    return capped_keep, True
-
-
 def _apply_top_k_features(scores_for_filter: torch.Tensor, keep_threshold: float | None, top_k_features: int | None) -> torch.Tensor:
     if keep_threshold is None:
         return torch.ones_like(scores_for_filter, dtype=torch.bool)
@@ -350,95 +317,6 @@ def _apply_adaptive_top_k_features(
     _, top_idx = passing_scores.topk(top_k_features)
     keep_mask[passing_idx[top_idx]] = True
     return keep_mask, q75, adaptive_threshold, survivors_before_top_k
-
-
-def _estimate_cluster_count(num_features: int) -> int:
-    if num_features < 200:
-        return 1
-    estimate = int(round(np.sqrt(num_features / 250.0)))
-    estimate = max(2, estimate)
-    estimate = min(estimate, 8)
-    estimate = min(estimate, max(1, num_features // 25))
-    return max(1, estimate)
-
-
-def _load_flat_feature_bank(file_refs: list[tuple[str, str]]) -> torch.Tensor:
-    tensors = []
-    for _fname, path in file_refs:
-        feats = torch.load(path, map_location="cpu", weights_only=True).float()
-        tensors.append(feats)
-    return torch.cat(tensors, dim=0) if tensors else torch.empty((0, 0), dtype=torch.float32)
-
-
-def _apply_clustered_adaptive_top_k_features(
-    features_for_filter: torch.Tensor,
-    scores_for_filter: torch.Tensor,
-    top_k_features: int | None,
-    n_clusters: int | str,
-    min_cluster_size: int,
-) -> tuple[torch.Tensor, dict]:
-    from sklearn.cluster import KMeans
-
-    keep_mask = torch.zeros_like(scores_for_filter, dtype=torch.bool)
-    scored_idx = (scores_for_filter >= 0).nonzero(as_tuple=True)[0]
-    if scored_idx.numel() == 0:
-        return keep_mask, {
-            "estimated_k": 0,
-            "used_k": 0,
-            "discarded_small_clusters": 0,
-            "kept_clusters": 0,
-            "cluster_thresholds": [],
-            "survivors_before_top_k": 0,
-        }
-
-    scored_features = features_for_filter[scored_idx].cpu().numpy().astype(np.float32, copy=False)
-    scored_scores = scores_for_filter[scored_idx].cpu().numpy().astype(np.float32, copy=False)
-    estimated_k = _estimate_cluster_count(len(scored_scores))
-    used_k = estimated_k if n_clusters == "auto" else int(n_clusters)
-    used_k = max(1, min(used_k, len(scored_scores)))
-
-    kmeans = KMeans(n_clusters=used_k, random_state=42, n_init="auto")
-    cluster_labels = kmeans.fit_predict(scored_features)
-
-    kept_scored_mask = np.zeros(len(scored_scores), dtype=bool)
-    cluster_thresholds: list[float] = []
-    discarded_small_clusters = 0
-    kept_clusters = 0
-
-    for cluster_id in range(used_k):
-        cluster_mask = cluster_labels == cluster_id
-        cluster_size = int(cluster_mask.sum())
-        if cluster_size < min_cluster_size:
-            discarded_small_clusters += 1
-            continue
-
-        cluster_scores = scored_scores[cluster_mask]
-        cluster_threshold = float(np.clip(np.percentile(cluster_scores, 75) * 0.90, 0.65, 0.82))
-        cluster_thresholds.append(cluster_threshold)
-        quality_mask = cluster_scores >= cluster_threshold
-
-        cluster_indices = np.nonzero(cluster_mask)[0]
-        kept_scored_mask[cluster_indices[quality_mask]] = True
-        kept_clusters += 1
-
-    survivors_before_top_k = int(kept_scored_mask.sum())
-    if survivors_before_top_k > 0 and top_k_features is not None and top_k_features > 0 and survivors_before_top_k > top_k_features:
-        kept_indices = np.nonzero(kept_scored_mask)[0]
-        kept_scores = scored_scores[kept_indices]
-        top_idx = np.argsort(kept_scores)[::-1][:top_k_features]
-        limited_mask = np.zeros_like(kept_scored_mask)
-        limited_mask[kept_indices[top_idx]] = True
-        kept_scored_mask = limited_mask
-
-    keep_mask[scored_idx] = torch.from_numpy(kept_scored_mask)
-    return keep_mask, {
-        "estimated_k": estimated_k,
-        "used_k": used_k,
-        "discarded_small_clusters": discarded_small_clusters,
-        "kept_clusters": kept_clusters,
-        "cluster_thresholds": cluster_thresholds,
-        "survivors_before_top_k": survivors_before_top_k,
-    }
 
 
 def _score_sidecar_path(out_cat_dir: str, fname: str) -> str:
@@ -614,11 +492,7 @@ def score_class(
     sim_floor: float,
     target_batch_size: int,
     num_workers: int,
-    keep_threshold: float | None,
     min_matches: int,
-    target_references: int | None,
-    early_accept: bool,
-    selection_mode: str,
     class_name: str | None = None,
 ):
     source_ids = sorted(grouped_bank)
@@ -635,7 +509,6 @@ def score_class(
     scores_by_file = {}
     good_by_file = {}
     bad_by_file = {}
-    accepted_so_far = 0
     for image_id in source_ids:
         file_refs.extend(grouped_bank[image_id])
 
@@ -649,8 +522,6 @@ def score_class(
     )
     source_pbar = tqdm(source_ids, desc=f"  Source {class_name}" if class_name else "  Source images", leave=False)
     for source_image_id in source_pbar:
-        if selection_mode == "target-references" and early_accept and target_references is not None and accepted_so_far >= target_references:
-            break
         source_entries = load_source_entries(grouped_bank[source_image_id])
         if not source_entries:
             continue
@@ -679,24 +550,6 @@ def score_class(
         scores = torch.full((source_feats.shape[0],), -1.0, dtype=torch.float32)
         any_match_mask = total >= 1
         scores[any_match_mask] = good[any_match_mask].float() / total[any_match_mask].float()
-        if selection_mode == "target-references" and early_accept and target_references is not None:
-            if keep_threshold is None:
-                accepted_mask = total >= min_matches
-            else:
-                accepted_mask = (total >= min_matches) & (scores >= keep_threshold)
-            remaining = target_references - accepted_so_far
-            if remaining <= 0:
-                break
-            if int(accepted_mask.sum().item()) > remaining:
-                accepted_indices = accepted_mask.nonzero(as_tuple=True)[0][:remaining]
-                limited_mask = torch.zeros_like(accepted_mask)
-                limited_mask[accepted_indices] = True
-                accepted_mask = limited_mask
-            accepted_so_far += int(accepted_mask.sum().item())
-            reject_mask = ~accepted_mask
-            scores[reject_mask] = 0.0
-            good[reject_mask] = 0
-            bad[reject_mask] = min_matches
         offset = 0
         for fname, feats in source_entries:
             n = feats.shape[0]
@@ -710,269 +563,6 @@ def score_class(
             torch.cuda.empty_cache()
     source_pbar.close()
     return file_refs, scores_by_file, good_by_file, bad_by_file
-
-
-def run_filter(
-    input_dir: str,
-    output_dir: str,
-    train_ann_file: str,
-    image_dir: str,
-    keep_threshold: float | None,
-    min_matches: int,
-    min_keep_ratio: float,
-    filter_mode: str,
-    query_chunk: int,
-    sim_floor: float,
-    target_batch_size: int,
-    support_image_limit: int | None,
-    target_references: int | None,
-    num_workers: int,
-    early_accept: bool,
-    selection_mode: str,
-    top_k_features: int | None,
-    resume: bool,
-):
-    t_start = time.time()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = load_model(device)
-    images, anns_by_image, categories, image_ids_by_cat = load_annotations(train_ann_file)
-    class_dirs = sorted(e for e in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, e)) and not e.startswith("_"))
-    report_path = os.path.join(output_dir, "intra_class_filter_report.json")
-    report = load_json(
-        report_path,
-        {
-            "config": {
-                "input_dir": input_dir,
-                "output_dir": output_dir,
-                "train_ann_file": train_ann_file,
-                "image_dir": image_dir,
-                "keep_threshold": keep_threshold,
-                "min_matches": min_matches,
-                "min_keep_ratio": min_keep_ratio,
-                "filter_mode": filter_mode,
-                "query_chunk": query_chunk,
-                "sim_floor": sim_floor,
-                "target_batch_size": target_batch_size,
-                "support_image_limit": support_image_limit,
-                "target_references": target_references,
-                "num_workers": num_workers,
-                "early_accept": early_accept,
-                "selection_mode": selection_mode,
-                "top_k_features": top_k_features,
-            },
-            "per_class": {},
-            "summary": {},
-        },
-    )
-    os.makedirs(output_dir, exist_ok=True)
-    totals = {"in": 0, "out": 0, "tp": 0, "fp": 0, "scored": 0}
-    skipped = 0
-
-    for cat_name in tqdm(class_dirs, desc="Classes"):
-        out_cat_dir = os.path.join(output_dir, cat_name)
-        if resume and os.path.isdir(out_cat_dir) and any(f.endswith(".pt") for f in os.listdir(out_cat_dir)):
-            skipped += 1
-            _accumulate_previous_class_stats(report, cat_name, totals)
-            continue
-        if cat_name in report["per_class"] and resume:
-            skipped += 1
-            _accumulate_previous_class_stats(report, cat_name, totals)
-            continue
-
-        cat_id = next((cid for cid, cat in categories.items() if get_category_name(categories, cid) == cat_name), None)
-        if cat_id is None:
-            continue
-        grouped_bank = index_class_bank_grouped(os.path.join(input_dir, cat_name))
-        if not grouped_bank:
-            continue
-        support_image_ids = _shared_support_image_ids(
-            grouped_bank=grouped_bank,
-            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
-            support_image_limit=support_image_limit,
-            class_name=cat_name,
-        )
-        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
-        target_worklist = build_target_worklist(
-            image_dir=image_dir,
-            images=images,
-            anns_by_image=anns_by_image,
-            cat_id=cat_id,
-            image_ids=support_image_ids,
-        )
-        single_reference_fallback = len(support_bank) == 1
-        if len(target_worklist) < 2 and not single_reference_fallback:
-            continue
-
-        file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
-            grouped_bank=support_bank,
-            target_worklist=target_worklist,
-            model=model,
-            device=device,
-            query_chunk=query_chunk,
-            sim_floor=sim_floor,
-            target_batch_size=target_batch_size,
-            num_workers=num_workers,
-            keep_threshold=keep_threshold,
-            min_matches=min_matches,
-            target_references=target_references,
-            early_accept=early_accept,
-            selection_mode=selection_mode,
-            class_name=cat_name,
-        )
-
-        file_entries = [(fname, scores_by_file[fname]) for fname, _ in file_refs if fname in scores_by_file]
-        if not file_entries:
-            continue
-        scores = torch.cat([scores_by_file[fname] for fname, _ in file_refs if fname in scores_by_file])
-        good = torch.cat([good_by_file[fname] for fname, _ in file_refs if fname in good_by_file])
-        bad = torch.cat([bad_by_file[fname] for fname, _ in file_refs if fname in bad_by_file])
-        total_matches = good + bad
-        scored_mask = total_matches >= min_matches
-        scores_for_filter = scores.clone()
-        scores_for_filter[~scored_mask] = -1.0
-
-        capped_by_target_refs = False
-        if single_reference_fallback:
-            keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
-            floor_applied = False
-            keep_by_file = _split_scores_by_file(file_entries, keep_mask)
-            files_saved, vectors_saved = save_class_outputs_from_disk(
-                out_cat_dir,
-                file_refs,
-                keep_by_file,
-                scores_by_file,
-            )
-        elif filter_mode == "reweight":
-            os.makedirs(out_cat_dir, exist_ok=True)
-            for fname, path in file_refs:
-                feats = torch.load(path, map_location="cpu", weights_only=True).float()
-                torch.save(feats, os.path.join(out_cat_dir, fname))
-                file_scores = scores_by_file.get(fname)
-                if file_scores is not None:
-                    np.save(
-                        _score_sidecar_path(out_cat_dir, fname),
-                        file_scores.detach().cpu().numpy().astype(np.float32, copy=False),
-                    )
-            weights_dir = os.path.join(output_dir, "_weights")
-            os.makedirs(weights_dir, exist_ok=True)
-            weight_tensor = scores_for_filter.clone()
-            weight_tensor[weight_tensor < 0] = 0.5
-            torch.save(weight_tensor.clamp(0.0, 1.0), os.path.join(weights_dir, f"{cat_name}.pt"))
-            keep_mask = torch.ones_like(scores_for_filter, dtype=torch.bool)
-            floor_applied = False
-            files_saved = len(file_refs)
-            vectors_saved = int(sum(scores_by_file[fname].shape[0] for fname, _ in file_refs if fname in scores_by_file))
-        else:
-            if keep_threshold is None:
-                keep_mask = torch.ones_like(scores_for_filter, dtype=torch.bool)
-                floor_applied = False
-            if selection_mode == "top-k-images":
-                if keep_threshold is not None:
-                    keep_mask = _apply_top_k_features(scores_for_filter, keep_threshold, top_k_features)
-                    floor_applied = False
-            else:
-                if keep_threshold is not None:
-                    keep_mask, floor_applied = _compute_keep_mask(scores_for_filter, keep_threshold, min_keep_ratio)
-                    keep_mask, capped_by_target_refs = _apply_target_references_cap(keep_mask, scores_for_filter, target_references)
-            keep_by_file = _split_scores_by_file(file_entries, keep_mask)
-            files_saved, vectors_saved = save_class_outputs_from_disk(out_cat_dir, file_refs, keep_by_file, scores_by_file)
-        if filter_mode == "reweight":
-            capped_by_target_refs = False
-
-        kept_tp = int(good[keep_mask].sum().item())
-        kept_fp = int(bad[keep_mask].sum().item())
-        scored_values = scores_for_filter[scores_for_filter >= 0]
-        if scored_values.numel():
-            scored_values_float = scored_values.float()
-            score_std = round(float(scored_values_float.std(unbiased=False).item()), 4)
-            score_q25 = round(float(torch.quantile(scored_values_float, 0.25).item()), 4)
-            score_q75 = round(float(torch.quantile(scored_values_float, 0.75).item()), 4)
-        else:
-            score_std = None
-            score_q25 = None
-            score_q75 = None
-        total_features = int(scores_for_filter.shape[0])
-        kept_features = int(keep_mask.sum().item())
-
-        report["per_class"][cat_name] = {
-            "status": (
-                "single_reference_raw_occupancy"
-                if single_reference_fallback
-                else (
-                    "reweight"
-                    if filter_mode == "reweight"
-                    else (
-                        "threshold_disabled"
-                        if keep_threshold is None
-                        else (
-                            "top_k_images"
-                            if selection_mode == "top-k-images"
-                            else (
-                                "early_accept"
-                                if early_accept and target_references is not None and kept_features <= target_references
-                                else ("target_ref_cap" if capped_by_target_refs else ("floor_applied" if floor_applied else "filtered"))
-                            )
-                        )
-                    )
-                )
-            ),
-            "total_features": total_features,
-            "kept_features": kept_features,
-            "removed_features": total_features - kept_features,
-            "removal_pct": round(100.0 * (total_features - kept_features) / max(total_features, 1), 1),
-            "tp": kept_tp,
-            "fp": kept_fp,
-            "precision": (kept_tp / (kept_tp + kept_fp)) if (kept_tp + kept_fp) > 0 else 0.0,
-            "scored_features": int(scored_mask.sum().item()),
-            "unscored_features": int((~scored_mask).sum().item()),
-            "score_mean": round(float(scored_values.mean().item()), 4) if scored_values.numel() else None,
-            "score_median": round(float(scored_values.median().item()), 4) if scored_values.numel() else None,
-            "score_std": score_std,
-            "score_min": round(float(scored_values.min().item()), 4) if scored_values.numel() else None,
-            "score_q25": score_q25,
-            "score_q75": score_q75,
-            "score_max": round(float(scored_values.max().item()), 4) if scored_values.numel() else None,
-            "files_saved": files_saved,
-            "vectors_saved": vectors_saved,
-            "per_feature_scores_saved": True,
-            "score_sidecar_suffix": ".scores.npy",
-            "target_images_used": len(target_worklist),
-            "single_reference_fallback": single_reference_fallback,
-            "score_type": "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
-            "match_counts_are_synthetic": single_reference_fallback,
-            "target_references_cap": target_references,
-            "selection_mode": selection_mode,
-            "support_images_used": len(support_image_ids),
-            "support_image_ids": support_image_ids,
-            "top_k_features": top_k_features,
-        }
-        save_json_atomic(report_path, report)
-
-        totals["in"] += total_features
-        totals["out"] += kept_features
-        totals["tp"] += kept_tp
-        totals["fp"] += kept_fp
-        totals["scored"] += int(scored_mask.sum().item())
-        del grouped_bank, target_worklist, file_refs, file_entries, scores_by_file, good_by_file, bad_by_file, scores, good, bad, scores_for_filter, keep_mask
-        gc.collect()
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-    report["summary"] = {
-        "classes_processed": len(report["per_class"]),
-        "classes_skipped": skipped,
-        "total_features_in": totals["in"],
-        "total_features_out": totals["out"],
-        "total_removed": totals["in"] - totals["out"],
-        "removal_pct": round(100.0 * (totals["in"] - totals["out"]) / max(totals["in"], 1), 2) if totals["in"] else 0.0,
-        "tp": totals["tp"],
-        "fp": totals["fp"],
-        "precision": (totals["tp"] / (totals["tp"] + totals["fp"])) if (totals["tp"] + totals["fp"]) > 0 else 0.0,
-        "scored_features": totals["scored"],
-        "elapsed_seconds": round(time.time() - t_start, 1),
-    }
-    save_json_atomic(report_path, report)
-    return report
 
 
 def run_score_bank(
@@ -1067,11 +657,7 @@ def run_score_bank(
             sim_floor=sim_floor,
             target_batch_size=target_batch_size,
             num_workers=num_workers,
-            keep_threshold=keep_threshold,
             min_matches=min_matches,
-            target_references=None,
-            early_accept=False,
-            selection_mode=selection_mode,
             class_name=cat_name,
         )
 
@@ -1169,446 +755,11 @@ def run_score_bank(
     return report
 
 
-def run_filter_adaptive(
-    input_dir: str,
-    output_dir: str,
-    train_ann_file: str,
-    image_dir: str,
-    min_matches: int,
-    query_chunk: int,
-    sim_floor: float,
-    target_batch_size: int,
-    support_image_limit: int | None,
-    num_workers: int,
-    selection_mode: str,
-    top_k_features: int | None,
-    resume: bool,
-):
-    t_start = time.time()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = load_model(device)
-    images, anns_by_image, categories, image_ids_by_cat = load_annotations(train_ann_file)
-    class_dirs = sorted(e for e in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, e)) and not e.startswith("_"))
-    report_path = os.path.join(output_dir, "intra_class_filter_report.json")
-    report = load_json(
-        report_path,
-        {
-            "config": {
-                "input_dir": input_dir,
-                "output_dir": output_dir,
-                "train_ann_file": train_ann_file,
-                "image_dir": image_dir,
-                "filter_strategy": "adaptive_q75_topk",
-                "adaptive_formula": "clip(q75 * 0.90, 0.65, 0.82)",
-                "min_matches": min_matches,
-                "query_chunk": query_chunk,
-                "sim_floor": sim_floor,
-                "target_batch_size": target_batch_size,
-                "support_image_limit": support_image_limit,
-                "num_workers": num_workers,
-                "selection_mode": selection_mode,
-                "top_k_features": top_k_features,
-            },
-            "per_class": {},
-            "summary": {},
-        },
-    )
-    os.makedirs(output_dir, exist_ok=True)
-    totals = {"in": 0, "out": 0, "tp": 0, "fp": 0, "scored": 0}
-    skipped = 0
-
-    for cat_name in tqdm(class_dirs, desc="Classes"):
-        out_cat_dir = os.path.join(output_dir, cat_name)
-        if resume and os.path.isdir(out_cat_dir) and any(f.endswith(".pt") for f in os.listdir(out_cat_dir)):
-            skipped += 1
-            _accumulate_previous_class_stats(report, cat_name, totals)
-            continue
-        if cat_name in report["per_class"] and resume:
-            skipped += 1
-            _accumulate_previous_class_stats(report, cat_name, totals)
-            continue
-
-        cat_id = next((cid for cid, cat in categories.items() if get_category_name(categories, cid) == cat_name), None)
-        if cat_id is None:
-            continue
-        grouped_bank = index_class_bank_grouped(os.path.join(input_dir, cat_name))
-        if not grouped_bank:
-            continue
-        support_image_ids = _shared_support_image_ids(
-            grouped_bank=grouped_bank,
-            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
-            support_image_limit=support_image_limit,
-            class_name=cat_name,
-        )
-        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
-        target_worklist = build_target_worklist(
-            image_dir=image_dir,
-            images=images,
-            anns_by_image=anns_by_image,
-            cat_id=cat_id,
-            image_ids=support_image_ids,
-        )
-        single_reference_fallback = len(support_bank) == 1
-        if len(target_worklist) < 2 and not single_reference_fallback:
-            continue
-
-        file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
-            grouped_bank=support_bank,
-            target_worklist=target_worklist,
-            model=model,
-            device=device,
-            query_chunk=query_chunk,
-            sim_floor=sim_floor,
-            target_batch_size=target_batch_size,
-            num_workers=num_workers,
-            keep_threshold=None,
-            min_matches=min_matches,
-            target_references=None,
-            early_accept=False,
-            selection_mode=selection_mode,
-            class_name=cat_name,
-        )
-
-        file_entries = [(fname, scores_by_file[fname]) for fname, _ in file_refs if fname in scores_by_file]
-        if not file_entries:
-            continue
-        scores = torch.cat([scores_by_file[fname] for fname, _ in file_refs if fname in scores_by_file])
-        good = torch.cat([good_by_file[fname] for fname, _ in file_refs if fname in good_by_file])
-        bad = torch.cat([bad_by_file[fname] for fname, _ in file_refs if fname in bad_by_file])
-        total_matches = good + bad
-        scored_mask = total_matches >= min_matches
-        scores_for_filter = scores.clone()
-        scores_for_filter[~scored_mask] = -1.0
-
-        if single_reference_fallback:
-            keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
-            q75_value = None
-            adaptive_threshold = None
-            survivors_before_top_k = len(scores_for_filter)
-        else:
-            keep_mask, q75_value, adaptive_threshold, survivors_before_top_k = _apply_adaptive_top_k_features(
-                scores_for_filter=scores_for_filter,
-                top_k_features=top_k_features,
-            )
-        keep_by_file = _split_scores_by_file(file_entries, keep_mask)
-        files_saved, vectors_saved = save_class_outputs_from_disk(out_cat_dir, file_refs, keep_by_file, scores_by_file)
-
-        kept_tp = int(good[keep_mask].sum().item())
-        kept_fp = int(bad[keep_mask].sum().item())
-        scored_values = scores_for_filter[scores_for_filter >= 0]
-        if scored_values.numel():
-            scored_values_float = scored_values.float()
-            score_std = round(float(scored_values_float.std(unbiased=False).item()), 4)
-            score_q25 = round(float(torch.quantile(scored_values_float, 0.25).item()), 4)
-            score_q75 = round(float(torch.quantile(scored_values_float, 0.75).item()), 4)
-        else:
-            score_std = None
-            score_q25 = None
-            score_q75 = None
-        total_features = int(scores_for_filter.shape[0])
-        kept_features = int(keep_mask.sum().item())
-
-        report["per_class"][cat_name] = {
-            "status": "single_reference_raw_occupancy" if single_reference_fallback else "adaptive_q75_topk",
-            "total_features": total_features,
-            "kept_features": kept_features,
-            "removed_features": total_features - kept_features,
-            "removal_pct": round(100.0 * (total_features - kept_features) / max(total_features, 1), 1),
-            "tp": kept_tp,
-            "fp": kept_fp,
-            "precision": (kept_tp / (kept_tp + kept_fp)) if (kept_tp + kept_fp) > 0 else 0.0,
-            "scored_features": int(scored_mask.sum().item()),
-            "unscored_features": int((~scored_mask).sum().item()),
-            "score_mean": round(float(scored_values.mean().item()), 4) if scored_values.numel() else None,
-            "score_median": round(float(scored_values.median().item()), 4) if scored_values.numel() else None,
-            "score_std": score_std,
-            "score_min": round(float(scored_values.min().item()), 4) if scored_values.numel() else None,
-            "score_q25": score_q25,
-            "score_q75": score_q75,
-            "score_max": round(float(scored_values.max().item()), 4) if scored_values.numel() else None,
-            "adaptive_q75": round(q75_value, 4) if q75_value is not None else None,
-            "adaptive_threshold": round(adaptive_threshold, 4) if adaptive_threshold is not None else None,
-            "survivors_before_top_k": survivors_before_top_k,
-            "files_saved": files_saved,
-            "vectors_saved": vectors_saved,
-            "per_feature_scores_saved": True,
-            "score_sidecar_suffix": ".scores.npy",
-            "target_images_used": len(target_worklist),
-            "single_reference_fallback": single_reference_fallback,
-            "score_type": "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
-            "match_counts_are_synthetic": single_reference_fallback,
-            "selection_mode": selection_mode,
-            "support_images_used": len(support_image_ids),
-            "support_image_ids": support_image_ids,
-            "top_k_features": top_k_features,
-        }
-        save_json_atomic(report_path, report)
-
-        totals["in"] += total_features
-        totals["out"] += kept_features
-        totals["tp"] += kept_tp
-        totals["fp"] += kept_fp
-        totals["scored"] += int(scored_mask.sum().item())
-        del grouped_bank, target_worklist, file_refs, file_entries, scores_by_file, good_by_file, bad_by_file, scores, good, bad, scores_for_filter, keep_mask
-        gc.collect()
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-    report["summary"] = {
-        "classes_processed": len(report["per_class"]),
-        "classes_skipped": skipped,
-        "total_features_in": totals["in"],
-        "total_features_out": totals["out"],
-        "total_removed": totals["in"] - totals["out"],
-        "removal_pct": round(100.0 * (totals["in"] - totals["out"]) / max(totals["in"], 1), 2) if totals["in"] else 0.0,
-        "tp": totals["tp"],
-        "fp": totals["fp"],
-        "precision": (totals["tp"] / (totals["tp"] + totals["fp"])) if (totals["tp"] + totals["fp"]) > 0 else 0.0,
-        "scored_features": totals["scored"],
-        "elapsed_seconds": round(time.time() - t_start, 1),
-        "filter_strategy": "adaptive_q75_topk",
-    }
-    save_json_atomic(report_path, report)
-    return report
-
-
-def run_filter_clustered_adaptive(
-    input_dir: str,
-    output_dir: str,
-    train_ann_file: str,
-    image_dir: str,
-    min_matches: int,
-    query_chunk: int,
-    sim_floor: float,
-    target_batch_size: int,
-    support_image_limit: int | None,
-    num_workers: int,
-    selection_mode: str,
-    top_k_features: int | None,
-    n_clusters: int | str,
-    min_cluster_size: int,
-    resume: bool,
-):
-    t_start = time.time()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = load_model(device)
-    images, anns_by_image, categories, image_ids_by_cat = load_annotations(train_ann_file)
-    class_dirs = sorted(e for e in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, e)) and not e.startswith("_"))
-    report_path = os.path.join(output_dir, "intra_class_filter_report.json")
-    report = load_json(
-        report_path,
-        {
-            "config": {
-                "input_dir": input_dir,
-                "output_dir": output_dir,
-                "train_ann_file": train_ann_file,
-                "image_dir": image_dir,
-                "filter_strategy": "clustered_adaptive_q75_topk",
-                "adaptive_formula": "cluster_threshold = clip(cluster_q75 * 0.90, 0.65, 0.82)",
-                "cluster_strategy": "kmeans_on_scored_features",
-                "n_clusters": n_clusters,
-                "min_cluster_size": min_cluster_size,
-                "min_matches": min_matches,
-                "query_chunk": query_chunk,
-                "sim_floor": sim_floor,
-                "target_batch_size": target_batch_size,
-                "support_image_limit": support_image_limit,
-                "num_workers": num_workers,
-                "selection_mode": selection_mode,
-                "top_k_features": top_k_features,
-            },
-            "per_class": {},
-            "summary": {},
-        },
-    )
-    os.makedirs(output_dir, exist_ok=True)
-    totals = {"in": 0, "out": 0, "tp": 0, "fp": 0, "scored": 0}
-    skipped = 0
-
-    for cat_name in tqdm(class_dirs, desc="Classes"):
-        out_cat_dir = os.path.join(output_dir, cat_name)
-        if resume and os.path.isdir(out_cat_dir) and any(f.endswith(".pt") for f in os.listdir(out_cat_dir)):
-            skipped += 1
-            _accumulate_previous_class_stats(report, cat_name, totals)
-            continue
-        if cat_name in report["per_class"] and resume:
-            skipped += 1
-            _accumulate_previous_class_stats(report, cat_name, totals)
-            continue
-
-        cat_id = next((cid for cid, cat in categories.items() if get_category_name(categories, cid) == cat_name), None)
-        if cat_id is None:
-            continue
-        grouped_bank = index_class_bank_grouped(os.path.join(input_dir, cat_name))
-        if not grouped_bank:
-            continue
-        support_image_ids = _shared_support_image_ids(
-            grouped_bank=grouped_bank,
-            annotated_image_ids=image_ids_by_cat.get(cat_id, []),
-            support_image_limit=support_image_limit,
-            class_name=cat_name,
-        )
-        support_bank = {image_id: grouped_bank[image_id] for image_id in support_image_ids}
-        target_worklist = build_target_worklist(
-            image_dir=image_dir,
-            images=images,
-            anns_by_image=anns_by_image,
-            cat_id=cat_id,
-            image_ids=support_image_ids,
-        )
-        single_reference_fallback = len(support_bank) == 1
-        if len(target_worklist) < 2 and not single_reference_fallback:
-            continue
-
-        file_refs, scores_by_file, good_by_file, bad_by_file = score_class(
-            grouped_bank=support_bank,
-            target_worklist=target_worklist,
-            model=model,
-            device=device,
-            query_chunk=query_chunk,
-            sim_floor=sim_floor,
-            target_batch_size=target_batch_size,
-            num_workers=num_workers,
-            keep_threshold=None,
-            min_matches=min_matches,
-            target_references=None,
-            early_accept=False,
-            selection_mode=selection_mode,
-            class_name=cat_name,
-        )
-
-        file_entries = [(fname, scores_by_file[fname]) for fname, _ in file_refs if fname in scores_by_file]
-        if not file_entries:
-            continue
-        features_for_filter = None if single_reference_fallback else _load_flat_feature_bank(file_refs)
-        scores = torch.cat([scores_by_file[fname] for fname, _ in file_refs if fname in scores_by_file])
-        good = torch.cat([good_by_file[fname] for fname, _ in file_refs if fname in good_by_file])
-        bad = torch.cat([bad_by_file[fname] for fname, _ in file_refs if fname in bad_by_file])
-        total_matches = good + bad
-        scored_mask = total_matches >= min_matches
-        scores_for_filter = scores.clone()
-        scores_for_filter[~scored_mask] = -1.0
-
-        if single_reference_fallback:
-            keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
-            cluster_meta = {
-                "estimated_k": 0,
-                "used_k": 0,
-                "discarded_small_clusters": 0,
-                "kept_clusters": 0,
-                "cluster_thresholds": [],
-                "survivors_before_top_k": len(scores_for_filter),
-            }
-        else:
-            keep_mask, cluster_meta = _apply_clustered_adaptive_top_k_features(
-                features_for_filter=features_for_filter,
-                scores_for_filter=scores_for_filter,
-                top_k_features=top_k_features,
-                n_clusters=n_clusters,
-                min_cluster_size=min_cluster_size,
-            )
-        keep_by_file = _split_scores_by_file(file_entries, keep_mask)
-        files_saved, vectors_saved = save_class_outputs_from_disk(out_cat_dir, file_refs, keep_by_file, scores_by_file)
-
-        kept_tp = int(good[keep_mask].sum().item())
-        kept_fp = int(bad[keep_mask].sum().item())
-        scored_values = scores_for_filter[scores_for_filter >= 0]
-        if scored_values.numel():
-            scored_values_float = scored_values.float()
-            score_std = round(float(scored_values_float.std(unbiased=False).item()), 4)
-            score_q25 = round(float(torch.quantile(scored_values_float, 0.25).item()), 4)
-            score_q75 = round(float(torch.quantile(scored_values_float, 0.75).item()), 4)
-        else:
-            score_std = None
-            score_q25 = None
-            score_q75 = None
-        cluster_thresholds = cluster_meta["cluster_thresholds"]
-        total_features = int(scores_for_filter.shape[0])
-        kept_features = int(keep_mask.sum().item())
-
-        report["per_class"][cat_name] = {
-            "status": (
-                "single_reference_raw_occupancy"
-                if single_reference_fallback
-                else "clustered_adaptive_q75_topk"
-            ),
-            "total_features": total_features,
-            "kept_features": kept_features,
-            "removed_features": total_features - kept_features,
-            "removal_pct": round(100.0 * (total_features - kept_features) / max(total_features, 1), 1),
-            "tp": kept_tp,
-            "fp": kept_fp,
-            "precision": (kept_tp / (kept_tp + kept_fp)) if (kept_tp + kept_fp) > 0 else 0.0,
-            "scored_features": int(scored_mask.sum().item()),
-            "unscored_features": int((~scored_mask).sum().item()),
-            "score_mean": round(float(scored_values.mean().item()), 4) if scored_values.numel() else None,
-            "score_median": round(float(scored_values.median().item()), 4) if scored_values.numel() else None,
-            "score_std": score_std,
-            "score_min": round(float(scored_values.min().item()), 4) if scored_values.numel() else None,
-            "score_q25": score_q25,
-            "score_q75": score_q75,
-            "score_max": round(float(scored_values.max().item()), 4) if scored_values.numel() else None,
-            "estimated_k": cluster_meta["estimated_k"],
-            "used_k": cluster_meta["used_k"],
-            "min_cluster_size": min_cluster_size,
-            "kept_clusters": cluster_meta["kept_clusters"],
-            "discarded_small_clusters": cluster_meta["discarded_small_clusters"],
-            "cluster_threshold_min": round(min(cluster_thresholds), 4) if cluster_thresholds else None,
-            "cluster_threshold_mean": round(float(np.mean(cluster_thresholds)), 4) if cluster_thresholds else None,
-            "cluster_threshold_max": round(max(cluster_thresholds), 4) if cluster_thresholds else None,
-            "survivors_before_top_k": cluster_meta["survivors_before_top_k"],
-            "files_saved": files_saved,
-            "vectors_saved": vectors_saved,
-            "per_feature_scores_saved": True,
-            "score_sidecar_suffix": ".scores.npy",
-            "target_images_used": len(target_worklist),
-            "single_reference_fallback": single_reference_fallback,
-            "score_type": "single_reference_raw_occupancy" if single_reference_fallback else "cross_image_retrieval_precision",
-            "match_counts_are_synthetic": single_reference_fallback,
-            "selection_mode": selection_mode,
-            "support_images_used": len(support_image_ids),
-            "support_image_ids": support_image_ids,
-            "top_k_features": top_k_features,
-        }
-        save_json_atomic(report_path, report)
-
-        totals["in"] += total_features
-        totals["out"] += kept_features
-        totals["tp"] += kept_tp
-        totals["fp"] += kept_fp
-        totals["scored"] += int(scored_mask.sum().item())
-        del grouped_bank, target_worklist, file_refs, file_entries, features_for_filter, scores_by_file, good_by_file, bad_by_file, scores, good, bad, scores_for_filter, keep_mask
-        gc.collect()
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-    report["summary"] = {
-        "classes_processed": len(report["per_class"]),
-        "classes_skipped": skipped,
-        "total_features_in": totals["in"],
-        "total_features_out": totals["out"],
-        "total_removed": totals["in"] - totals["out"],
-        "removal_pct": round(100.0 * (totals["in"] - totals["out"]) / max(totals["in"], 1), 2) if totals["in"] else 0.0,
-        "tp": totals["tp"],
-        "fp": totals["fp"],
-        "precision": (totals["tp"] / (totals["tp"] + totals["fp"])) if (totals["tp"] + totals["fp"]) > 0 else 0.0,
-        "scored_features": totals["scored"],
-        "elapsed_seconds": round(time.time() - t_start, 1),
-        "filter_strategy": "clustered_adaptive_q75_topk",
-    }
-    save_json_atomic(report_path, report)
-    return report
-
-
 def _build_keep_mask_from_scored_bank(
     method: str,
-    file_refs: list[tuple[str, str]],
     scores_for_filter: torch.Tensor,
-    features_for_filter: torch.Tensor | None,
     keep_threshold: float | None,
     top_k_features: int | None,
-    n_clusters: int | str,
-    min_cluster_size: int,
 ):
     meta: dict[str, object] = {}
     if method == "fixed":
@@ -1632,18 +783,6 @@ def _build_keep_mask_from_scored_bank(
             }
         )
         return keep_mask, meta
-    if method == "clustered_adaptive_q75":
-        if features_for_filter is None:
-            raise ValueError("features_for_filter is required for clustered adaptive filtering.")
-        keep_mask, cluster_meta = _apply_clustered_adaptive_top_k_features(
-            features_for_filter=features_for_filter,
-            scores_for_filter=scores_for_filter,
-            top_k_features=top_k_features,
-            n_clusters=n_clusters,
-            min_cluster_size=min_cluster_size,
-        )
-        cluster_meta["status"] = "clustered_adaptive_q75_topk"
-        return keep_mask, cluster_meta
     raise ValueError(f"Unknown filtering method: {method}")
 
 
@@ -1653,10 +792,10 @@ def run_filter_from_scored_bank(
     method: str,
     keep_threshold: float | None,
     top_k_features: int | None,
-    n_clusters: int | str,
-    min_cluster_size: int,
     resume: bool,
 ):
+    if method not in {"fixed", "adaptive_q75"}:
+        raise ValueError(f"Unknown filtering method: {method}")
     t_start = time.time()
     class_dirs = sorted(e for e in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, e)) and not e.startswith("_"))
     report_path = os.path.join(output_dir, "intra_class_filter_report.json")
@@ -1669,8 +808,6 @@ def run_filter_from_scored_bank(
                 "method": method,
                 "keep_threshold": keep_threshold,
                 "top_k_features": top_k_features,
-                "n_clusters": n_clusters,
-                "min_cluster_size": min_cluster_size,
             },
             "per_class": {},
             "summary": {},
@@ -1715,23 +852,15 @@ def run_filter_from_scored_bank(
             else None
         )
         scores_for_filter = scores.clone()
-        features_for_filter = None
-        if method == "clustered_adaptive_q75" and not single_reference_fallback:
-            features_for_filter = _load_flat_feature_bank(file_refs)
-
         if single_reference_fallback:
             keep_mask = _single_reference_keep_mask(len(scores_for_filter), top_k_features)
             meta = {"status": "single_reference_raw_occupancy"}
         else:
             keep_mask, meta = _build_keep_mask_from_scored_bank(
                 method=method,
-                file_refs=file_refs,
                 scores_for_filter=scores_for_filter,
-                features_for_filter=features_for_filter,
                 keep_threshold=keep_threshold,
                 top_k_features=top_k_features,
-                n_clusters=n_clusters,
-                min_cluster_size=min_cluster_size,
             )
         keep_by_file = _split_scores_by_file([(fname, scores_by_file[fname]) for fname, _ in file_refs], keep_mask)
         files_saved, vectors_saved = save_class_outputs_from_disk(out_cat_dir, file_refs, keep_by_file, scores_by_file)
@@ -1792,20 +921,6 @@ def run_filter_from_scored_bank(
             class_report["adaptive_threshold"] = round(float(meta["adaptive_threshold"]), 4) if meta["adaptive_threshold"] is not None else None
         if "survivors_before_top_k" in meta:
             class_report["survivors_before_top_k"] = int(meta["survivors_before_top_k"])
-        if method == "clustered_adaptive_q75":
-            cluster_thresholds = meta.get("cluster_thresholds", [])
-            class_report.update(
-                {
-                    "estimated_k": int(meta.get("estimated_k", 0)),
-                    "used_k": int(meta.get("used_k", 0)),
-                    "min_cluster_size": min_cluster_size,
-                    "kept_clusters": int(meta.get("kept_clusters", 0)),
-                    "discarded_small_clusters": int(meta.get("discarded_small_clusters", 0)),
-                    "cluster_threshold_min": round(min(cluster_thresholds), 4) if cluster_thresholds else None,
-                    "cluster_threshold_mean": round(float(np.mean(cluster_thresholds)), 4) if cluster_thresholds else None,
-                    "cluster_threshold_max": round(max(cluster_thresholds), 4) if cluster_thresholds else None,
-                }
-            )
         report["per_class"][cat_name] = class_report
         save_json_atomic(report_path, report)
 
@@ -1814,7 +929,7 @@ def run_filter_from_scored_bank(
         totals["tp"] += kept_tp or 0
         totals["fp"] += kept_fp or 0
         totals["scored"] += total_features
-        del file_refs, scores_by_file, good_by_file, bad_by_file, scores, good, bad, scores_for_filter, keep_mask, features_for_filter
+        del file_refs, scores_by_file, good_by_file, bad_by_file, scores, good, bad, scores_for_filter, keep_mask
 
     report["summary"] = {
         "classes_processed": len(report["per_class"]),

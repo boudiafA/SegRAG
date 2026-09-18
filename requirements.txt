@@ -10,7 +10,7 @@ pyarrow
 pycocotools
 PyYAML
 regex
-scikit-learn
+scipy
 submitit
 termcolor
 torch

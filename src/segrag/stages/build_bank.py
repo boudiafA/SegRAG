@@ -1,8 +1,7 @@
 """
-Stage 1: build a raw DINOv3 feature bank, then filter it intra-class.
+Build occupancy-gated raw DINOv3 descriptors from annotated supports.
 
-This stage merges the old Stage 1a and 1b entrypoints so the public workflow
-has a single bank-preparation command.
+ICCD scoring and filtering are separate stages (score_bank and filter_bank).
 """
 
 from __future__ import annotations
@@ -36,7 +35,6 @@ from segrag.data.coco import (
     load_lvis_annotations,
     resize_transform,
 )
-from segrag.modeling.iccd import run_filter
 from segrag.utils.resume import load_json, save_json_atomic
 
 
@@ -62,15 +60,12 @@ def _parse_optional_int(value: str) -> int | None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Stage 1: build a raw feature bank from train.json, then filter it intra-class."
+        description="Build a raw DINOv3 feature bank from train.json."
     )
     parser.add_argument("--dataset-root", default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--train-ann-file", default=None, help="COCO-style training annotation JSON.")
     parser.add_argument("--image-dir", default=None, help="Root directory used to resolve image paths.")
     parser.add_argument("--raw-feature-bank-dir", default=None, help="Stage 1a output directory.")
-    parser.add_argument("--filtered-feature-bank-dir", default=None, help="Stage 1b output directory.")
-    parser.add_argument("--skip-build", action="store_true", help="Skip raw feature-bank creation and only run filtering.")
-    parser.add_argument("--skip-filter", action="store_true", help="Skip intra-class filtering after the raw bank is ready.")
     parser.add_argument("--resume", action="store_true")
 
     parser.add_argument("--image-size", type=int, default=1536)
@@ -95,28 +90,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scan-workers", type=int, default=8)
     parser.add_argument("--checkpoint-name", default="_build_feature_bank_resume.json")
 
-    parser.add_argument("--selection-mode", default="top-k-images")
-    parser.add_argument(
-        "--top-k-features",
-        type=_parse_optional_int,
-        default=10000,
-        help="Maximum kept features per class after filtering. Use `none` to disable the cap.",
-    )
-    parser.add_argument(
-        "--keep-threshold",
-        type=_parse_optional_threshold,
-        default=0.8,
-        help="Filtering threshold for Stage 1b. Use `none` to keep all features and scores.",
-    )
-    parser.add_argument("--min-matches", type=int, default=3)
-    parser.add_argument("--min-keep-ratio", type=float, default=0.30)
-    parser.add_argument("--filter-mode", default="hard", choices=["hard", "reweight"])
-    parser.add_argument("--target-references", type=int, default=None)
-    parser.add_argument("--query-chunk", type=int, default=256)
-    parser.add_argument("--target-batch-size", type=int, default=16)
-    parser.add_argument("--num-workers", type=int, default=8)
-    parser.add_argument("--sim-floor", type=float, default=0.0)
-    parser.add_argument("--early-accept", action="store_true")
     return parser
 
 
@@ -136,11 +109,6 @@ def _resolve_stage1_paths(args: argparse.Namespace) -> argparse.Namespace:
         args.dataset_root,
         "feature_bank_dinov3_vitl16_1536",
     )
-    if hasattr(args, "filtered_feature_bank_dir"):
-        args.filtered_feature_bank_dir = args.filtered_feature_bank_dir or os.path.join(
-            args.dataset_root,
-            "feature_bank_dinov3_vitl16_intra_class_filtered_1536",
-        )
     return args
 
 
@@ -441,33 +409,7 @@ def run_build(args: argparse.Namespace) -> dict:
 def run(args: argparse.Namespace) -> dict:
     args = _resolve_stage1_paths(args)
     _validate_support_image_limit(args.max_images_per_class)
-    build_result = None
-    filter_result = None
-
-    if not args.skip_build:
-        build_result = run_build(args)
-
-    if not args.skip_filter:
-        filter_result = run_filter(
-            input_dir=args.raw_feature_bank_dir,
-            output_dir=args.filtered_feature_bank_dir,
-            train_ann_file=args.train_ann_file,
-            image_dir=args.image_dir,
-            keep_threshold=args.keep_threshold,
-            min_matches=args.min_matches,
-            min_keep_ratio=args.min_keep_ratio,
-            filter_mode=args.filter_mode,
-            query_chunk=args.query_chunk,
-            sim_floor=args.sim_floor,
-            target_batch_size=args.target_batch_size,
-            support_image_limit=args.max_images_per_class,
-            target_references=args.target_references,
-            num_workers=args.num_workers,
-            early_accept=args.early_accept,
-            selection_mode=args.selection_mode,
-            top_k_features=args.top_k_features,
-            resume=args.resume,
-        )
+    build_result = run_build(args)
 
     return {
         "config": {
@@ -475,15 +417,11 @@ def run(args: argparse.Namespace) -> dict:
             "train_ann_file": args.train_ann_file,
             "image_dir": args.image_dir,
             "raw_feature_bank_dir": args.raw_feature_bank_dir,
-            "filtered_feature_bank_dir": args.filtered_feature_bank_dir,
             "resume": args.resume,
-            "skip_build": args.skip_build,
-            "skip_filter": args.skip_filter,
             "support_images_per_class": args.max_images_per_class,
             "self_comparison": False,
         },
         "build": build_result,
-        "filter": filter_result,
     }
 
 

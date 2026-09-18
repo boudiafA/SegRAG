@@ -262,8 +262,6 @@ def _run_stage1(args: argparse.Namespace, layout: DatasetLayout) -> dict:
         method="adaptive_q75",
         keep_threshold=None,
         top_k_features=args.feature_top_k,
-        n_clusters="auto",
-        min_cluster_size=5,
         resume=args.resume,
     )
     return {
