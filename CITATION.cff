@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use SegRAG in your research, please cite the paper below."
+title: "SegRAG: Retrieval augmented spatial prompting for open vocabulary semantic segmentation"
+type: software
+authors:
+  - family-names: Boudiaf
+    given-names: Abderrahmene
+  - family-names: Hussain
+    given-names: Irfan
+  - family-names: Javed
+    given-names: Sajid
+repository-code: "https://github.com/boudiafA/SegRAG"
+preferred-citation:
+  type: article
+  title: "SegRAG: Retrieval augmented spatial prompting for open vocabulary semantic segmentation"
+  authors:
+    - family-names: Boudiaf
+      given-names: Abderrahmene
+    - family-names: Hussain
+      given-names: Irfan
+    - family-names: Javed
+      given-names: Sajid
+  journal: "Information Processing & Management"
+  volume: "64"
+  issue: "2, Part B"
+  start: "105190"
+  year: 2027
+  issn: "0306-4573"
+  doi: "10.1016/j.ipm.2026.105190"
+  url: "https://www.sciencedirect.com/science/article/pii/S0306457326005807"

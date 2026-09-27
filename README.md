@@ -1,21 +1,21 @@
 # SegRAG: Retrieval Augmented Spatial Prompting for Open Vocabulary Semantic Segmentation
 
-Accepted at **Information Processing & Management**.
+**Information Processing & Management**, 64(2, Part B), 105190 (2027).
+[Paper](https://doi.org/10.1016/j.ipm.2026.105190) | [Citation](#citation)
 
-SegRAG is a training-free semantic segmentation framework that augments SAM 3
-with spatial evidence retrieved from a class-indexed DINOv3 feature bank. It is
-designed for cases where text-only grounding is ambiguous or fails under domain
-shift: the class name tells SAM 3 *what* to segment, while retrieved DINOv3
-matches provide point prompts telling it *where* the target class appears.
+SegRAG is a training-free framework for open-vocabulary semantic segmentation
+that guides frozen SAM 3 with visual evidence retrieved from annotated
+references. It builds a compact, class-indexed memory of DINOv3 patch
+descriptors to support segmentation when text-only grounding is ambiguous or
+fails under domain shift.
 
-During an offline stage, SegRAG extracts dense DINOv3 ViT-L/16 descriptors from
-annotated reference images and filters them with **Intra-Class Cohesion
-Distillation (ICCD)**, retaining prototypes that consistently retrieve
-same-class foreground. At inference time, **Topographic Similarity Grounding
-(TSG)** converts the query-prototype similarity landscape into spatially
-coherent point prompts. The class text and points are then delivered to SAM 3 in
-a single joint prompting pass. SegRAG requires no model training, no synthetic
-data, and no task-specific weight updates.
+With multiple references, **Intra-Class Cohesion Distillation (ICCD)** filters
+descriptors by cross-image foreground agreement; with one reference, foreground
+descriptors are retained directly without ICCD. **Topographic Similarity
+Grounding (TSG)** converts high-similarity query regions into point prompts,
+which are combined with the class text in a single SAM 3 prompting pass. The
+class name specifies *what* to segment, while retrieved points indicate *where*.
+Both models remain frozen: no fine-tuning or synthetic training data is needed.
 
 ![SegRAG pipeline](docs/assets/pipeline.jpg)
 
@@ -352,8 +352,24 @@ PYTHONPATH=src python scripts/evaluate_sam3.py --help
 
 ## Citation
 
-The paper is accepted at Information Processing & Management. A citation entry
-will be added when the DOI and final publication metadata are available.
+If you use SegRAG in your research, please cite:
+
+```bibtex
+@article{BOUDIAF2027105190,
+  title = {SegRAG: Retrieval augmented spatial prompting for open vocabulary semantic segmentation},
+  author = {Abderrahmene Boudiaf and Irfan Hussain and Sajid Javed},
+  journal = {Information Processing & Management},
+  volume = {64},
+  number = {2, Part B},
+  pages = {105190},
+  year = {2027},
+  issn = {0306-4573},
+  doi = {10.1016/j.ipm.2026.105190},
+  url = {https://www.sciencedirect.com/science/article/pii/S0306457326005807}
+}
+```
+
+Machine-readable citation metadata is available in [CITATION.cff](CITATION.cff).
 
 ## Release Scope
 

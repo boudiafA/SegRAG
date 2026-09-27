@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "segrag"
 version = "1.2.0"
-description = "SegRAG: retrieval-augmented semantic segmentation with DINOv3 feature banks and SAM3 mask decoding"
+description = "Training-free open-vocabulary semantic segmentation with annotated DINOv3 reference memory and joint text-and-point prompting of frozen SAM 3."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
